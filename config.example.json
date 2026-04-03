@@ -1,0 +1,7 @@
+{
+  "api_url": "https://your-api-gateway-url.amazonaws.com/stage",
+  "cognito_region": "ap-south-1",
+  "cognito_user_pool_id": "ap-south-1_XXXXXXXXX",
+  "cognito_client_id": "your-cognito-client-id",
+  "web_dashboard_url": "https://your-dashboard-url.vercel.app"
+}

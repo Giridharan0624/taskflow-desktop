@@ -1,0 +1,131 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* ── Light Theme — matches web app exactly ── */
+  :root {
+    --color-bg: #f6f6f9;
+    --color-surface: #ffffff;
+    --color-surface-hover: #f9f9fc;
+    --color-surface-alt: #f0f0f5;
+    --color-border: #e8e8ee;
+    --color-border-light: #f0f0f5;
+    --color-text: #1a1a2e;
+    --color-text-secondary: #6b7194;
+    --color-text-muted: #9ca3bf;
+    --color-primary: #6366f1;
+    --color-primary-hover: #4f46e5;
+    --color-primary-light: #eef2ff;
+    --color-live: #10b981;
+    --color-live-bg: rgba(16, 185, 129, 0.08);
+    --color-live-border: rgba(16, 185, 129, 0.2);
+    --color-live-text: #059669;
+    --color-danger: #ef4444;
+    --color-danger-bg: rgba(239, 68, 68, 0.08);
+    --color-danger-border: rgba(239, 68, 68, 0.15);
+    --shadow-card: 0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.03);
+  }
+
+  /* ── Dark Theme — matches web app exactly ── */
+  .dark {
+    --color-bg: #0f1117;
+    --color-surface: #191b24;
+    --color-surface-hover: #1f222c;
+    --color-surface-alt: #252836;
+    --color-border: #232636;
+    --color-border-light: #1c1f2a;
+    --color-text: #e4e4ec;
+    --color-text-secondary: #9ca3bf;
+    --color-text-muted: #6b7194;
+    --color-primary: #818cf8;
+    --color-primary-hover: #6366f1;
+    --color-primary-light: #1e1b4b;
+    --color-live: #34d399;
+    --color-live-bg: rgba(16, 185, 129, 0.1);
+    --color-live-border: rgba(16, 185, 129, 0.2);
+    --color-live-text: #6ee7b7;
+    --color-danger: #f87171;
+    --color-danger-bg: rgba(239, 68, 68, 0.1);
+    --color-danger-border: rgba(239, 68, 68, 0.2);
+    --shadow-card: 0 1px 3px rgba(0,0,0,0.2), 0 4px 12px rgba(0,0,0,0.15);
+    color-scheme: dark;
+  }
+
+  body {
+    background: var(--color-bg);
+    color: var(--color-text);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    user-select: none;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 999px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--color-text-muted); }
+}
+
+@layer components {
+  .btn-primary {
+    @apply px-4 py-2 rounded-xl font-semibold text-[13px] text-white transition-all
+           disabled:opacity-40 disabled:cursor-not-allowed;
+    background: var(--color-primary);
+  }
+  .btn-primary:hover:not(:disabled) { background: var(--color-primary-hover); }
+
+  .btn-stop {
+    @apply px-4 py-1.5 rounded-xl text-[12px] font-bold transition-all disabled:opacity-40;
+    background: var(--color-danger-bg);
+    color: var(--color-danger);
+    border: 1px solid var(--color-danger-border);
+  }
+  .btn-stop:hover:not(:disabled) {
+    filter: brightness(1.15);
+  }
+
+  .btn-meeting {
+    @apply py-2 px-4 rounded-xl text-[13px] font-semibold transition-all disabled:opacity-40;
+    background: var(--color-surface-hover);
+    color: var(--color-text-secondary);
+    border: 1px solid var(--color-border);
+  }
+  .btn-meeting:hover:not(:disabled) {
+    background: var(--color-surface-alt);
+    color: var(--color-text);
+  }
+
+  .btn-ghost {
+    color: var(--color-text-muted);
+    @apply text-[12px] transition-colors;
+  }
+  .btn-ghost:hover { color: var(--color-text-secondary); }
+
+  .input {
+    @apply w-full px-3 py-2 rounded-xl text-[13px] transition-all;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    color: var(--color-text);
+  }
+  .input::placeholder { color: var(--color-text-muted); }
+  .input:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+  }
+
+  .timer-display {
+    @apply font-mono font-bold tracking-tight;
+    color: var(--color-live-text);
+  }
+
+  .card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 16px;
+    box-shadow: var(--shadow-card);
+  }
+}

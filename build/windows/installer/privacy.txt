@@ -1,0 +1,28 @@
+ACTIVITY MONITORING DISCLOSURE
+
+TaskFlow Desktop monitors your work activity while the timer is running.
+
+WHAT WE TRACK:
+- Keyboard and mouse activity levels (counts only, not keystrokes)
+- Which applications are in the foreground (e.g., "VS Code", "Chrome")
+- Active vs idle time during work sessions
+
+WHAT WE DO NOT TRACK:
+- What you type (no keystroke logging)
+- Screenshots or screen recordings
+- Websites visited, files opened, or URLs
+- Mouse positions or click coordinates
+- Any data when the timer is stopped
+
+HOW IT WORKS:
+- Activity data is collected ONLY while your timer is running
+- Data is sent to your organization's TaskFlow server every 5 minutes
+- Your admin can view activity reports on the TaskFlow web dashboard
+- When the timer is stopped, zero monitoring occurs
+
+By installing and using this software, you acknowledge that your organization
+uses activity monitoring during tracked work sessions.
+
+Contact your IT administrator for the full privacy policy.
+
+Copyright 2026 NeuroStack. All rights reserved.

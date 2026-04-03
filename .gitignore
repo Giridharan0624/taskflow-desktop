@@ -1,0 +1,40 @@
+# Build output
+build/bin/
+build/windows/installer/*.exe
+frontend/dist/
+frontend/node_modules/
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+vendor/
+
+# Wails generated
+wailsbindings/
+wails_bindings/
+frontend/wailsjs/
+
+# Config (contains environment-specific values — use config.example.json)
+config.json
+
+# Temp scripts
+check.ps1
+generate-icon.html
+convert-icon.ps1
+install-nsis.ps1
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
