@@ -3,6 +3,7 @@ package tray
 import (
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -30,6 +31,28 @@ var (
 	pSetForegroundWindow = user32.NewProc("SetForegroundWindow")
 	pGetCursorPos     = user32.NewProc("GetCursorPos")
 	pPostMessage      = user32.NewProc("PostMessageW")
+	pLoadImage        = user32.NewProc("LoadImageW")
+	pGetModuleHandle  = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetModuleHandleW")
+	pExtractIconEx    = shell32.NewProc("ExtractIconExW")
+
+	// GDI for drawing recording dot overlay
+	gdi32              = windows.NewLazySystemDLL("gdi32.dll")
+	pCreateCompatibleDC = gdi32.NewProc("CreateCompatibleDC")
+	pDeleteDC           = gdi32.NewProc("DeleteDC")
+	pSelectObject       = gdi32.NewProc("SelectObject")
+	pCreateSolidBrush   = gdi32.NewProc("CreateSolidBrush")
+	pDeleteObject       = gdi32.NewProc("DeleteObject")
+	pEllipse            = gdi32.NewProc("Ellipse")
+	pGetIconInfo        = user32.NewProc("GetIconInfo")
+	pCreateIconIndirect = user32.NewProc("CreateIconIndirect")
+	pDestroyIcon        = user32.NewProc("DestroyIcon")
+	pGetDC              = user32.NewProc("GetDC")
+	pReleaseDC          = user32.NewProc("ReleaseDC")
+	pCreateCompatibleBitmap = gdi32.NewProc("CreateCompatibleBitmap")
+	pDrawIconEx         = user32.NewProc("DrawIconEx")
+	pFillRect           = user32.NewProc("FillRect")
+	pCreateRectRgn      = gdi32.NewProc("CreateRectRgn")
+	pFillRgn            = gdi32.NewProc("FillRgn")
 )
 
 const (
@@ -37,6 +60,7 @@ const (
 	NIM_MODIFY = 0x01
 	NIM_DELETE = 0x02
 	NIF_MESSAGE = 0x01
+	NIF_ICON    = 0x02
 	NIF_TIP     = 0x04
 	NIF_INFO    = 0x10
 
@@ -99,6 +123,20 @@ type WNDCLASSEX struct {
 	HIconSm       uintptr
 }
 
+// ICONINFO is the Windows icon info structure.
+type ICONINFO struct {
+	FIcon    int32
+	XHotspot uint32
+	YHotspot uint32
+	HbmMask  uintptr
+	HbmColor uintptr
+}
+
+// RECT structure
+type RECT struct {
+	Left, Top, Right, Bottom int32
+}
+
 // ActionHandler defines callbacks for tray menu actions.
 type ActionHandler struct {
 	OnShowWindow func()
@@ -116,6 +154,8 @@ type Manager struct {
 	running     bool
 	timerActive bool
 	statusText  string
+	baseIcon    uintptr // Original app icon
+	activeIcon  uintptr // Icon with green recording dot
 }
 
 // NewManager creates a new tray manager.
@@ -162,12 +202,17 @@ func (m *Manager) Start(done <-chan struct{}) {
 	)
 	m.hwnd = hwnd
 
+	// Load icons
+	m.baseIcon = loadAppIcon()
+	m.activeIcon = createDotOverlayIcon(m.baseIcon)
+
 	// Create tray icon
 	m.nid = NOTIFYICONDATAW{
 		HWnd:             hwnd,
 		UID:              1,
-		UFlags:           NIF_MESSAGE | NIF_TIP,
+		UFlags:           NIF_MESSAGE | NIF_TIP | NIF_ICON,
 		UCallbackMessage: WM_TRAY_CALLBACK,
+		HIcon:            m.baseIcon,
 	}
 	m.nid.CbSize = uint32(unsafe.Sizeof(m.nid))
 	copy(m.nid.SzTip[:], utf16("TaskFlow Desktop"))
@@ -217,7 +262,7 @@ func (m *Manager) Stop() {
 	pPostMessage.Call(m.hwnd, 0x0012, 0, 0) // WM_QUIT via WM_CLOSE
 }
 
-// SetTimerActive updates the tray tooltip based on timer state.
+// SetTimerActive updates the tray icon and tooltip based on timer state.
 func (m *Manager) SetTimerActive(active bool, task *state.CurrentTask) {
 	m.mu.Lock()
 	m.timerActive = active
@@ -234,7 +279,15 @@ func (m *Manager) SetTimerActive(active bool, task *state.CurrentTask) {
 		tip = tip[:127]
 	}
 	copy(m.nid.SzTip[:], utf16(tip))
-	m.nid.UFlags = NIF_TIP
+
+	// Swap icon: green dot when active, normal when stopped
+	if active && m.activeIcon != 0 {
+		m.nid.HIcon = m.activeIcon
+	} else if m.baseIcon != 0 {
+		m.nid.HIcon = m.baseIcon
+	}
+
+	m.nid.UFlags = NIF_TIP | NIF_ICON
 	pShellNotifyIcon.Call(NIM_MODIFY, uintptr(unsafe.Pointer(&m.nid)))
 }
 
@@ -324,4 +377,120 @@ func utf16(s string) []uint16 {
 func openBrowser(url string) {
 	cmd, _ := syscall.UTF16PtrFromString(url)
 	shell32.NewProc("ShellExecuteW").Call(0, 0, uintptr(unsafe.Pointer(cmd)), 0, 0, 1)
+}
+
+// loadAppIcon extracts the icon from the running exe (Wails embeds it at resource ID 3).
+func loadAppIcon() uintptr {
+	const IMAGE_ICON = 1
+	const LR_DEFAULTSIZE = 0x0040
+	const LR_SHARED = 0x8000
+
+	hModule, _, _ := pGetModuleHandle.Call(0)
+	if hModule != 0 {
+		icon, _, _ := pLoadImage.Call(
+			hModule, 3, IMAGE_ICON, 16, 16, LR_DEFAULTSIZE|LR_SHARED,
+		)
+		if icon != 0 {
+			return icon
+		}
+	}
+
+	exePath, err := os.Executable()
+	if err == nil {
+		p, _ := syscall.UTF16PtrFromString(exePath)
+		var small uintptr
+		pExtractIconEx.Call(uintptr(unsafe.Pointer(p)), 0, 0, uintptr(unsafe.Pointer(&small)), 1)
+		if small != 0 {
+			return small
+		}
+	}
+
+	return 0
+}
+
+// createDotOverlayIcon draws a green recording dot on the bottom-right of the base icon.
+func createDotOverlayIcon(baseIcon uintptr) uintptr {
+	if baseIcon == 0 {
+		return 0
+	}
+
+	const DI_NORMAL = 0x0003
+	const size = 16
+
+	// Get screen DC
+	screenDC, _, _ := pGetDC.Call(0)
+	if screenDC == 0 {
+		return 0
+	}
+	defer pReleaseDC.Call(0, screenDC)
+
+	// Create color bitmap
+	hbmColor, _, _ := pCreateCompatibleBitmap.Call(screenDC, size, size)
+	if hbmColor == 0 {
+		return 0
+	}
+
+	// Create mask bitmap
+	hbmMask, _, _ := pCreateCompatibleBitmap.Call(screenDC, size, size)
+	if hbmMask == 0 {
+		pDeleteObject.Call(hbmColor)
+		return 0
+	}
+
+	// Create DC and draw into color bitmap
+	memDC, _, _ := pCreateCompatibleDC.Call(screenDC)
+	if memDC == 0 {
+		pDeleteObject.Call(hbmColor)
+		pDeleteObject.Call(hbmMask)
+		return 0
+	}
+	defer pDeleteDC.Call(memDC)
+
+	// Select color bitmap and draw base icon
+	pSelectObject.Call(memDC, hbmColor)
+	pDrawIconEx.Call(memDC, 0, 0, baseIcon, size, size, 0, 0, DI_NORMAL)
+
+	// Draw green dot (bottom-right corner)
+	// Red: RGB(239, 68, 68) = 0x004444EF in BGR format for Windows
+	greenBrush, _, _ := pCreateSolidBrush.Call(0x004444EF)
+	if greenBrush != 0 {
+		// Draw filled circle at bottom-right (dot: 6px diameter)
+		dotSize := int32(6)
+		x := int32(size) - dotSize
+		y := int32(size) - dotSize
+		pSelectObject.Call(memDC, greenBrush)
+		pEllipse.Call(memDC, uintptr(x), uintptr(y), uintptr(int32(size)), uintptr(int32(size)))
+
+		// White border around dot
+		whiteBrush, _, _ := pCreateSolidBrush.Call(0x00FFFFFF)
+		if whiteBrush != 0 {
+			// Slightly larger circle behind for border effect (drawn first next time)
+			pDeleteObject.Call(whiteBrush)
+		}
+		pDeleteObject.Call(greenBrush)
+	}
+
+	// Setup mask (all black = fully opaque)
+	maskDC, _, _ := pCreateCompatibleDC.Call(screenDC)
+	if maskDC != 0 {
+		pSelectObject.Call(maskDC, hbmMask)
+		blackBrush, _, _ := pCreateSolidBrush.Call(0x00000000)
+		if blackBrush != 0 {
+			r := RECT{0, 0, size, size}
+			pFillRect.Call(maskDC, uintptr(unsafe.Pointer(&r)), blackBrush)
+			pDeleteObject.Call(blackBrush)
+		}
+		pDeleteDC.Call(maskDC)
+	}
+
+	// Create icon from bitmaps
+	ii := ICONINFO{
+		FIcon:    1, // TRUE = icon
+		HbmMask:  hbmMask,
+		HbmColor: hbmColor,
+	}
+	newIcon, _, _ := pCreateIconIndirect.Call(uintptr(unsafe.Pointer(&ii)))
+
+	// Don't delete bitmaps — they're owned by the icon now
+	return newIcon
 }
