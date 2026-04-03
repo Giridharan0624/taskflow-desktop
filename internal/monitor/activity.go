@@ -194,8 +194,13 @@ func (m *ActivityMonitor) sendCurrentBucket() {
 	m.resetBucketLocked()
 	m.mu.Unlock()
 
+	log.Printf("Sending heartbeat: kb=%d mouse=%d active=%ds idle=%ds app=%s",
+		bucket["keyboard_count"], bucket["mouse_count"], bucket["active_seconds"], bucket["idle_seconds"], topApp)
+
 	if err := m.apiClient.SendActivityHeartbeat(bucket); err != nil {
 		log.Printf("Failed to send activity heartbeat: %v", err)
+	} else {
+		log.Println("Heartbeat sent successfully")
 	}
 }
 

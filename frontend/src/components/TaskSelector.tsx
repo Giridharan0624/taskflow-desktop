@@ -37,7 +37,6 @@ export function TaskSelector({ onStart, loading }: TaskSelectorProps) {
   );
 
   const selectedTask = tasks.find((t) => t.taskId === selectedTaskId);
-  const selectedProject = projects.find((p) => p.id === selectedSource);
 
   function handleStartTask(e: Event) {
     e.preventDefault();
