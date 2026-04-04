@@ -201,13 +201,19 @@ func (m *Manager) Start(done <-chan struct{}) {
 	wc.CbSize = uint32(unsafe.Sizeof(wc))
 	pRegisterClass.Call(uintptr(unsafe.Pointer(&wc)))
 
-	// Create hidden message-only window
+	// Create hidden window for receiving tray messages
+	windowName, _ := syscall.UTF16PtrFromString("TaskFlowTrayWindow")
 	hwnd, _, _ := pCreateWindowEx.Call(
-		0,
-		uintptr(unsafe.Pointer(className)),
-		0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0,                                       // dwExStyle
+		uintptr(unsafe.Pointer(className)),       // lpClassName
+		uintptr(unsafe.Pointer(windowName)),       // lpWindowName
+		0,                                        // dwStyle (hidden)
+		0, 0, 0, 0,                              // x, y, w, h
+		0,                                        // hWndParent (desktop)
+		0, 0, 0,                                  // hMenu, hInstance, lpParam
 	)
 	m.hwnd = hwnd
+	log.Printf("Tray window created: hwnd=%v", hwnd)
 
 	// Load icons
 	m.baseIcon = loadAppIcon()
@@ -231,21 +237,20 @@ func (m *Manager) Start(done <-chan struct{}) {
 
 	log.Println("System tray started")
 
-	// Message loop — runs until WM_QUIT
+	// Monitor done channel in separate goroutine
+	go func() {
+		<-done
+		pPostMessage.Call(m.hwnd, 0x0012, 0, 0) // WM_CLOSE → triggers WM_QUIT
+	}()
+
+	// Message loop — must run on the same thread as CreateWindowEx
 	var msg MSG
 	for {
-		select {
-		case <-done:
-			m.cleanup()
-			return
-		default:
-		}
-
 		ret, _, _ := pGetMessage.Call(
 			uintptr(unsafe.Pointer(&msg)),
 			0, 0, 0,
 		)
-		if ret == 0 { // WM_QUIT
+		if ret == 0 || ret == uintptr(^uintptr(0)) { // WM_QUIT or error
 			break
 		}
 		pTranslateMessage.Call(uintptr(unsafe.Pointer(&msg)))
@@ -331,12 +336,20 @@ func (m *Manager) SetTimerActive(active bool, task *state.CurrentTask) {
 func trayWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 	switch msg {
 	case WM_TRAY_CALLBACK:
-		switch lParam {
+		// With NOTIFYICON_VERSION_4, the event is in the low word of lParam
+		event := lParam & 0xFFFF
+		switch event {
 		case WM_RBUTTONUP:
 			showContextMenu(hwnd)
 		case WM_LBUTTONDBLCLK:
 			if globalManager != nil && globalManager.handler != nil && globalManager.handler.OnShowWindow != nil {
-				globalManager.handler.OnShowWindow()
+				log.Println("Tray: double-click → ShowWindow")
+				go globalManager.handler.OnShowWindow()
+			}
+		case 0x0201: // WM_LBUTTONDOWN — single click also shows window
+			if globalManager != nil && globalManager.handler != nil && globalManager.handler.OnShowWindow != nil {
+				log.Println("Tray: single-click → ShowWindow")
+				go globalManager.handler.OnShowWindow()
 			}
 		}
 		return 0
@@ -346,7 +359,7 @@ func trayWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		switch id {
 		case IDM_SHOW:
 			if globalManager != nil && globalManager.handler != nil && globalManager.handler.OnShowWindow != nil {
-				globalManager.handler.OnShowWindow()
+				go globalManager.handler.OnShowWindow()
 			}
 		case IDM_STOP:
 			if globalManager != nil && globalManager.handler != nil && globalManager.handler.OnStopTimer != nil {

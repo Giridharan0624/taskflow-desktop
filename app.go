@@ -21,6 +21,7 @@ import (
 type App struct {
 	ctx             context.Context // The EXACT Wails context — required for runtime calls
 	stopChan        chan struct{}   // Signal to stop background goroutines
+	quitting        bool           // True when user clicks Quit from tray
 	State           *state.AppState
 	AuthService     *auth.Service
 	APIClient       *api.Client
@@ -52,6 +53,8 @@ func (a *App) startup(ctx context.Context) {
 		},
 		OnQuit: func() {
 			go func() {
+				log.Println("Quit requested from tray")
+				a.quitting = true
 				a.ActivityMonitor.Stop()
 				a.TrayManager.Stop()
 				runtime.Quit(a.ctx)
@@ -94,10 +97,13 @@ func (a *App) shutdown(ctx context.Context) {
 }
 
 // beforeClose is called when the user clicks the X button.
-// Minimize to tray instead of quitting — timer + monitoring keep running.
+// Minimize to tray instead of quitting — unless user clicked "Quit" from tray.
 func (a *App) beforeClose(ctx context.Context) (prevent bool) {
+	if a.quitting {
+		return false // Allow actual quit
+	}
 	runtime.WindowHide(a.ctx)
-	return true // Prevent actual close — app stays in tray
+	return true // Minimize to tray
 }
 
 // startBackgroundServices starts polling (activity monitor is started/stopped by timer state).
@@ -293,9 +299,15 @@ func (a *App) GetCurrentUser() (*api.User, error) {
 
 // ShowWindow restores the app window (called from tray).
 func (a *App) ShowWindow() {
+	log.Println("ShowWindow called")
 	runtime.WindowShow(a.ctx)
 	runtime.WindowUnminimise(a.ctx)
-	runtime.WindowSetAlwaysOnTop(a.ctx, false)
+	// Briefly set always-on-top to bring to front, then release
+	runtime.WindowSetAlwaysOnTop(a.ctx, true)
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		runtime.WindowSetAlwaysOnTop(a.ctx, false)
+	}()
 }
 
 // CheckForUpdate checks GitHub for a newer version. Called from frontend.
