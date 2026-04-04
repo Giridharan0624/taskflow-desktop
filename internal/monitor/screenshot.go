@@ -6,7 +6,6 @@ import (
 	"image"
 	"image/jpeg"
 	"log"
-	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -203,15 +202,8 @@ func (sc *ScreenshotCapture) CaptureScreenDefault() ([]byte, error) {
 	return sc.CaptureScreen(60)
 }
 
-// ShowNotification displays a Windows toast notification.
+// ShowNotification displays a Windows toast notification (like WhatsApp).
 func ShowNotification(title, message string) {
-	// Use a simple MessageBeep as notification sound
-	user32ForScreenshot.NewProc("MessageBeep").Call(0x00000040) // MB_ICONINFORMATION
-
-	t, _ := syscall.UTF16PtrFromString(title)
-	m, _ := syscall.UTF16PtrFromString(message)
-	// Use shell32 notification balloon via tray — but for simplicity, just log
-	_ = t
-	_ = m
 	log.Printf("Notification: %s — %s", title, message)
+	ShowWindowsToast(title, message)
 }

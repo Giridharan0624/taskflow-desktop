@@ -19,7 +19,7 @@ const (
 	ScreenshotInterval = 10 * time.Minute
 
 	// ScreenshotWarningTime is the notification shown before capture.
-	ScreenshotWarningTime = 3 * time.Second
+	ScreenshotWarningTime = 5 * time.Second
 )
 
 // ActivityBucket holds aggregated activity data for a 5-minute window.
@@ -33,6 +33,9 @@ type ActivityBucket struct {
 	AppBreakdown  map[string]int `json:"appBreakdown"` // app name → seconds
 }
 
+// NotifyFunc is a callback for showing notifications (e.g., tray balloon).
+type NotifyFunc func(title, message string)
+
 // ActivityMonitor tracks keyboard and mouse activity using Win32 APIs.
 type ActivityMonitor struct {
 	mu            sync.Mutex
@@ -42,6 +45,7 @@ type ActivityMonitor struct {
 	idleDetector  *IdleDetector
 	inputTracker  *InputTracker
 	screenshotCap *ScreenshotCapture
+	onNotify      NotifyFunc
 
 	// Current bucket counters (reset every 5 min)
 	keyboardCount   int
@@ -67,6 +71,11 @@ func NewActivityMonitor(apiClient *api.Client, appState *state.AppState) *Activi
 		appUsage:      make(map[string]int),
 		stopChan:      make(chan struct{}),
 	}
+}
+
+// SetNotifyFunc sets the callback for showing notifications.
+func (m *ActivityMonitor) SetNotifyFunc(fn NotifyFunc) {
+	m.onNotify = fn
 }
 
 // Start begins activity monitoring. Safe to call multiple times — no-ops if already running.
@@ -257,8 +266,11 @@ func (m *ActivityMonitor) captureScreenshots(ctx context.Context) {
 
 // takeAndUploadScreenshot captures the screen, uploads to S3, and stores the URL.
 func (m *ActivityMonitor) takeAndUploadScreenshot() {
-	// 3-second warning
-	ShowNotification("TaskFlow", "Screenshot in 3 seconds...")
+	// 5-second warning — Windows toast notification (like WhatsApp)
+	ShowWindowsToast("TaskFlow — Screenshot", "A screenshot will be taken in 5 seconds...")
+	if m.onNotify != nil {
+		m.onNotify("TaskFlow", "Screenshot in 5 seconds...")
+	}
 	time.Sleep(ScreenshotWarningTime)
 
 	// Skip if screen is locked

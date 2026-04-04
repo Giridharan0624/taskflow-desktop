@@ -85,7 +85,7 @@ const (
 	IDM_STATUS   = 1005
 )
 
-// NOTIFYICONDATAW is the Windows tray icon structure.
+// NOTIFYICONDATAW is the Windows tray icon structure (extended for balloon notifications).
 type NOTIFYICONDATAW struct {
 	CbSize           uint32
 	HWnd             uintptr
@@ -94,6 +94,12 @@ type NOTIFYICONDATAW struct {
 	UCallbackMessage uint32
 	HIcon            uintptr
 	SzTip            [128]uint16
+	DwState          uint32
+	DwStateMask      uint32
+	SzInfo           [256]uint16
+	UVersion         uint32
+	SzInfoTitle      [64]uint16
+	DwInfoFlags      uint32
 }
 
 type POINT struct {
@@ -261,6 +267,18 @@ func (m *Manager) Stop() {
 		return
 	}
 	pPostMessage.Call(m.hwnd, 0x0012, 0, 0) // WM_QUIT via WM_CLOSE
+}
+
+// ShowBalloon displays a Windows notification balloon from the tray icon.
+func (m *Manager) ShowBalloon(title, message string) {
+	if !m.running {
+		return
+	}
+	copy(m.nid.SzInfoTitle[:], utf16(title))
+	copy(m.nid.SzInfo[:], utf16(message))
+	m.nid.DwInfoFlags = 0x00000001 // NIIF_INFO
+	m.nid.UFlags = NIF_INFO
+	pShellNotifyIcon.Call(NIM_MODIFY, uintptr(unsafe.Pointer(&m.nid)))
 }
 
 // SetTimerActive updates the tray icon and tooltip based on timer state.

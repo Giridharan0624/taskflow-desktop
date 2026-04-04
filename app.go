@@ -14,6 +14,7 @@ import (
 	"taskflow-desktop/internal/monitor"
 	"taskflow-desktop/internal/state"
 	"taskflow-desktop/internal/tray"
+	"taskflow-desktop/internal/updater"
 )
 
 // App is the main application struct. Methods bound to the frontend via Wails.
@@ -37,6 +38,11 @@ func (a *App) startup(ctx context.Context) {
 	a.ActivityMonitor = monitor.NewActivityMonitor(a.APIClient, a.State)
 
 	a.TrayManager = tray.NewManager(a.State)
+
+	// Wire screenshot notifications to tray balloon
+	a.ActivityMonitor.SetNotifyFunc(func(title, message string) {
+		a.TrayManager.ShowBalloon(title, message)
+	})
 	a.TrayManager.SetHandler(&tray.ActionHandler{
 		OnShowWindow: func() { a.ShowWindow() },
 		OnStopTimer: func() {
@@ -59,6 +65,20 @@ func (a *App) startup(ctx context.Context) {
 
 	// Start system tray (pure Win32 — no library conflict with Wails)
 	go a.TrayManager.Start(a.stopChan)
+
+	// Check for updates silently on startup
+	go func() {
+		time.Sleep(5 * time.Second) // Wait for app to fully load
+		info, err := updater.CheckForUpdate()
+		if err != nil {
+			log.Printf("Update check failed: %v", err)
+			return
+		}
+		if info.Available {
+			log.Printf("Update available: v%s (current: v%s)", info.Version, info.CurrentVer)
+			runtime.EventsEmit(a.ctx, "update:available", info)
+		}
+	}()
 }
 
 // shutdown is called when the app is closing.
@@ -141,11 +161,9 @@ func (a *App) fetchAttendance() {
 
 	if timerActive {
 		a.TrayManager.SetTimerActive(true, attendance.CurrentTask)
-		// Start activity monitor if not already running
 		a.ActivityMonitor.Start(a.ctx)
 	} else {
 		a.TrayManager.SetTimerActive(false, nil)
-		// Stop activity monitor when timer is off
 		a.ActivityMonitor.Stop()
 	}
 
@@ -274,4 +292,23 @@ func (a *App) ShowWindow() {
 	runtime.WindowShow(a.ctx)
 	runtime.WindowUnminimise(a.ctx)
 	runtime.WindowSetAlwaysOnTop(a.ctx, false)
+}
+
+// CheckForUpdate checks GitHub for a newer version. Called from frontend.
+func (a *App) CheckForUpdate() (*updater.UpdateInfo, error) {
+	return updater.CheckForUpdate()
+}
+
+// InstallUpdate downloads and installs the update. Called from frontend.
+func (a *App) InstallUpdate(downloadURL, fileName string) error {
+	return updater.DownloadAndInstall(&updater.UpdateInfo{
+		Available:   true,
+		DownloadURL: downloadURL,
+		FileName:    fileName,
+	})
+}
+
+// GetAppVersion returns the current app version.
+func (a *App) GetAppVersion() string {
+	return updater.CurrentVersion
 }

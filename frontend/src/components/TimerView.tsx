@@ -4,6 +4,7 @@ import type {
   Attendance,
   AttendanceSession,
   StartTimerData,
+  UpdateInfo,
 } from "../app";
 import { Timer, formatDuration } from "./Timer";
 import { TaskSelector } from "./TaskSelector";
@@ -228,6 +229,27 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
 
 function Shell({ user, onLogout, children, bottom }: { user: User; onLogout: () => void; children: any; bottom?: any }) {
   const { isDark, toggle } = useTheme();
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [updating, setUpdating] = useState(false);
+
+  // Listen for update:available event from Go backend
+  useEffect(() => {
+    window.runtime.EventsOn("update:available", (info: UpdateInfo) => {
+      if (info?.available) setUpdateInfo(info);
+    });
+    return () => window.runtime.EventsOff("update:available");
+  }, []);
+
+  async function handleUpdate() {
+    if (!updateInfo) return;
+    setUpdating(true);
+    try {
+      await window.go.main.App.InstallUpdate(updateInfo.downloadUrl, updateInfo.fileName);
+    } catch {
+      setUpdating(false);
+    }
+  }
+
   return (
     <div class="flex flex-col h-screen" style={{ background: "var(--color-bg)" }}>
       {/* Header */}
@@ -261,6 +283,23 @@ function Shell({ user, onLogout, children, bottom }: { user: User; onLogout: () 
           <button class="btn-ghost px-2 py-1" onClick={onLogout}>Sign Out</button>
         </div>
       </header>
+
+      {/* Update banner */}
+      {updateInfo && (
+        <div class="flex items-center justify-between px-3 py-2" style={{ background: "var(--color-primary-light)", borderBottom: "1px solid var(--color-border)" }}>
+          <p class="text-[11px] font-medium" style={{ color: "var(--color-primary)" }}>
+            v{updateInfo.version} available
+          </p>
+          <button
+            onClick={handleUpdate}
+            disabled={updating}
+            class="text-[10px] font-bold px-2.5 py-1 rounded-lg text-white transition-all disabled:opacity-50"
+            style={{ background: "var(--color-primary)" }}
+          >
+            {updating ? "Updating..." : "Update Now"}
+          </button>
+        </div>
+      )}
 
       <div class="flex-1 overflow-y-auto">{children}</div>
 

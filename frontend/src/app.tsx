@@ -17,6 +17,9 @@ declare global {
           GetMyTasks(): Promise<Task[]>;
           GetCurrentUser(): Promise<User>;
           ShowWindow(): Promise<void>;
+          CheckForUpdate(): Promise<UpdateInfo>;
+          InstallUpdate(downloadUrl: string, fileName: string): Promise<void>;
+          GetAppVersion(): Promise<string>;
         };
       };
     };
@@ -98,6 +101,16 @@ export interface User {
   avatarUrl: string | null;
   employeeId: string | null;
   skills: string[];
+}
+
+export interface UpdateInfo {
+  available: boolean;
+  version: string;
+  currentVersion: string;
+  downloadUrl: string;
+  releaseNotes: string;
+  fileName: string;
+  size: number;
 }
 
 export function App() {
