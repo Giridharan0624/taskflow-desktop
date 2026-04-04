@@ -53,7 +53,6 @@ export function SessionList({
               </span>
             )}
 
-            {/* Resume button — shown for all stopped sessions */}
             {!group.isActive && onResume && (
               <button
                 class="text-primary-600 hover:text-primary-700 text-xs font-medium px-2 py-1 rounded hover:bg-primary-50"
@@ -86,19 +85,15 @@ function groupSessionsByTask(
   const map = new Map<string, GroupedSession>();
 
   for (const session of sessions) {
-    // Use taskId, or description, or "meeting" as the grouping key
     const key = session.taskId || session.description || "meeting";
     const existing = map.get(key);
-
     const isActive = !session.signOutAt;
 
-    // Calculate hours for completed sessions
     let hours = 0;
     if (!isActive) {
       if (session.hours && session.hours > 0) {
         hours = session.hours;
       } else if (session.signOutAt && session.signInAt) {
-        // Fallback: calculate from timestamps
         hours =
           (new Date(session.signOutAt).getTime() -
             new Date(session.signInAt).getTime()) /
@@ -123,7 +118,6 @@ function groupSessionsByTask(
     }
   }
 
-  // Sort: active first, then by hours descending
   return Array.from(map.values()).sort((a, b) => {
     if (a.isActive && !b.isActive) return -1;
     if (!a.isActive && b.isActive) return 1;

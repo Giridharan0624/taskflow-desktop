@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
+	"taskflow-desktop/internal/config"
 	"taskflow-desktop/internal/state"
 )
 
@@ -317,7 +318,7 @@ func trayWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 				globalManager.handler.OnStopTimer()
 			}
 		case IDM_DASHBOARD:
-			openBrowser("https://taskflow-ns.vercel.app")
+			openBrowser(config.Get().WebDashboardURL)
 		case IDM_QUIT:
 			if globalManager != nil && globalManager.handler != nil && globalManager.handler.OnQuit != nil {
 				globalManager.handler.OnQuit()

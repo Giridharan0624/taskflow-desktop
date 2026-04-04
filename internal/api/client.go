@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-resty/resty/v2"
 
@@ -78,7 +79,10 @@ func NewClient(authService *auth.Service, appState *state.AppState) *Client {
 		},
 	}
 
-	client := resty.NewWithClient(&http.Client{Transport: transport}).
+	client := resty.NewWithClient(&http.Client{
+		Transport: transport,
+		Timeout:   30 * time.Second,
+	}).
 		SetBaseURL(cfg.APIURL).
 		SetHeader("Content-Type", "application/json")
 

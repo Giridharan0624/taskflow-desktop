@@ -74,6 +74,7 @@ export function TaskSelector({ onStart, loading }: TaskSelectorProps) {
         class="input"
         placeholder="What are you working on?"
         value={description}
+        maxLength={500}
         onInput={(e) => setDescription((e.target as HTMLInputElement).value)}
       />
 

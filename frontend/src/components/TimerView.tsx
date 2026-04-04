@@ -75,6 +75,7 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
   );
 
   async function handleStart(data: StartTimerData) {
+    if (!navigator.onLine) { setError("No internet connection."); return; }
     setLoading(true);
     setError("");
     const t0 = new Date().toISOString();
@@ -98,6 +99,7 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
   }
 
   async function handleStop() {
+    if (!navigator.onLine) { setError("No internet connection."); return; }
     setLoading(true);
     setError("");
     _optimisticSignInAt = null;
