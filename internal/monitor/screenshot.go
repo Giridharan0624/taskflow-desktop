@@ -202,8 +202,7 @@ func (sc *ScreenshotCapture) CaptureScreenDefault() ([]byte, error) {
 	return sc.CaptureScreen(60)
 }
 
-// ShowNotification displays a Windows toast notification (like WhatsApp).
+// ShowNotification logs a notification (actual display is via tray balloon in activity.go).
 func ShowNotification(title, message string) {
-	log.Printf("Notification: %s — %s", title, message)
-	ShowWindowsToast(title, message)
+	log.Printf("Notification: %s - %s", title, message)
 }
