@@ -201,8 +201,10 @@ func (m *ActivityMonitor) sendCurrentBucket() {
 		"top_app":        topApp,
 		"app_breakdown":  m.appUsage,
 	}
-	if m.lastScreenshot != "" {
-		bucket["screenshot_url"] = m.lastScreenshot
+	screenshotURL := m.lastScreenshot
+	if screenshotURL != "" {
+		bucket["screenshot_url"] = screenshotURL
+		m.lastScreenshot = "" // Clear only after including in heartbeat
 	}
 
 	m.resetBucketLocked()
@@ -230,7 +232,7 @@ func (m *ActivityMonitor) resetBucketLocked() {
 	m.activeSeconds = 0
 	m.idleSeconds = 0
 	m.appUsage = make(map[string]int)
-	m.lastScreenshot = ""
+	// NOTE: lastScreenshot is NOT cleared here — it persists until sent in a heartbeat
 }
 
 // captureScreenshots takes a screenshot every 10 minutes while the timer is active.
