@@ -52,8 +52,7 @@ type ActivityMonitor struct {
 	mouseCount      int
 	activeSeconds   int
 	idleSeconds     int
-	appUsage        map[string]int // app name → seconds in current bucket
-	lastScreenshot  string         // CDN URL of last screenshot taken
+	appUsage map[string]int // app name → seconds in current bucket
 
 	running  bool
 	stopChan chan struct{}
@@ -180,6 +179,7 @@ func (m *ActivityMonitor) sendHeartbeats(ctx context.Context) {
 
 		case <-ticker.C:
 			if !m.appState.IsTimerActive() {
+				log.Println("Heartbeat skipped: timer not active")
 				m.resetBucket()
 				continue
 			}
@@ -210,11 +210,6 @@ func (m *ActivityMonitor) sendCurrentBucket() {
 		"top_app":        topApp,
 		"app_breakdown":  m.appUsage,
 	}
-	screenshotURL := m.lastScreenshot
-	if screenshotURL != "" {
-		bucket["screenshot_url"] = screenshotURL
-		m.lastScreenshot = "" // Clear only after including in heartbeat
-	}
 
 	m.resetBucketLocked()
 	m.mu.Unlock()
@@ -241,7 +236,6 @@ func (m *ActivityMonitor) resetBucketLocked() {
 	m.activeSeconds = 0
 	m.idleSeconds = 0
 	m.appUsage = make(map[string]int)
-	// NOTE: lastScreenshot is NOT cleared here — it persists until sent in a heartbeat
 }
 
 // captureScreenshots takes a screenshot every 10 minutes while the timer is active.
@@ -289,10 +283,20 @@ func (m *ActivityMonitor) takeAndUploadScreenshot() {
 		return
 	}
 
-	// Store URL for next heartbeat
-	m.mu.Lock()
-	m.lastScreenshot = cdnURL
-	m.mu.Unlock()
-
 	log.Printf("Screenshot uploaded: %s (%d KB)", cdnURL, len(jpegData)/1024)
+
+	// Send screenshot immediately in its own heartbeat — don't wait for next cycle
+	bucket := map[string]interface{}{
+		"timestamp":      time.Now().UTC().Format(time.RFC3339),
+		"keyboard_count": 0,
+		"mouse_count":    0,
+		"active_seconds": 0,
+		"idle_seconds":   0,
+		"screenshot_url": cdnURL,
+	}
+	if err := m.apiClient.SendActivityHeartbeat(bucket); err != nil {
+		log.Printf("Failed to send screenshot heartbeat: %v", err)
+	} else {
+		log.Println("Screenshot heartbeat sent immediately")
+	}
 }

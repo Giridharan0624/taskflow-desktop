@@ -225,6 +225,10 @@ func (m *Manager) Start(done <-chan struct{}) {
 	copy(m.nid.SzTip[:], utf16("TaskFlow Desktop"))
 	pShellNotifyIcon.Call(NIM_ADD, uintptr(unsafe.Pointer(&m.nid)))
 
+	// Set version 4 for modern balloon/toast support on Windows 10/11
+	m.nid.UVersion = 4 // NOTIFYICON_VERSION_4
+	pShellNotifyIcon.Call(0x04, uintptr(unsafe.Pointer(&m.nid))) // NIM_SETVERSION
+
 	log.Println("System tray started")
 
 	// Message loop — runs until WM_QUIT
@@ -275,12 +279,23 @@ func (m *Manager) ShowBalloon(title, message string) {
 		log.Println("ShowBalloon skipped: tray not running")
 		return
 	}
-	log.Printf("ShowBalloon: %s — %s", title, message)
+	log.Printf("ShowBalloon: %s - %s", title, message)
+
+	// Clear previous balloon text first
+	for i := range m.nid.SzInfoTitle {
+		m.nid.SzInfoTitle[i] = 0
+	}
+	for i := range m.nid.SzInfo {
+		m.nid.SzInfo[i] = 0
+	}
+
 	copy(m.nid.SzInfoTitle[:], utf16(title))
 	copy(m.nid.SzInfo[:], utf16(message))
 	m.nid.DwInfoFlags = 0x00000001 // NIIF_INFO
-	m.nid.UFlags = NIF_INFO
-	pShellNotifyIcon.Call(NIM_MODIFY, uintptr(unsafe.Pointer(&m.nid)))
+	// NIF_INFO is required for balloon; include NIF_ICON + NIF_TIP to keep icon visible
+	m.nid.UFlags = NIF_INFO | NIF_ICON | NIF_TIP
+	ret, _, err := pShellNotifyIcon.Call(NIM_MODIFY, uintptr(unsafe.Pointer(&m.nid)))
+	log.Printf("ShowBalloon result: ret=%d err=%v", ret, err)
 }
 
 // SetTimerActive updates the tray icon and tooltip based on timer state.
