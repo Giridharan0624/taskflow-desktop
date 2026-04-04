@@ -51,7 +51,11 @@ func (a *App) startup(ctx context.Context) {
 			}
 		},
 		OnQuit: func() {
-			runtime.Quit(a.ctx)
+			go func() {
+				a.ActivityMonitor.Stop()
+				a.TrayManager.Stop()
+				runtime.Quit(a.ctx)
+			}()
 		},
 	})
 
