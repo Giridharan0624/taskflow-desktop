@@ -227,6 +227,8 @@ Quick summary:
 
 ---
 
-## License
+## Author
 
-Private project. All rights reserved. Built by NEUROSTACK.
+Developed by **Giridharan S** at **NEUROSTACK**
+
+Copyright 2026 NEUROSTACK. All rights reserved.
