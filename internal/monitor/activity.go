@@ -266,20 +266,13 @@ func (m *ActivityMonitor) captureScreenshots(ctx context.Context) {
 
 // takeAndUploadScreenshot captures the screen, uploads to S3, and stores the URL.
 func (m *ActivityMonitor) takeAndUploadScreenshot() {
-	// 5-second warning — Windows toast notification (like WhatsApp)
-	ShowWindowsToast("TaskFlow — Screenshot", "A screenshot will be taken in 5 seconds...")
+	// 5-second warning via system tray balloon (reliable on all Windows versions)
 	if m.onNotify != nil {
 		m.onNotify("TaskFlow", "Screenshot in 5 seconds...")
 	}
 	time.Sleep(ScreenshotWarningTime)
 
-	// Skip if screen is locked
-	if m.screenshotCap.IsScreenLocked() {
-		log.Println("Screenshot skipped: screen is locked")
-		return
-	}
-
-	// Capture
+	// Capture (CaptureScreen checks lock state internally)
 	jpegData, err := m.screenshotCap.CaptureScreenDefault()
 	if err != nil {
 		log.Printf("Screenshot capture failed: %v", err)

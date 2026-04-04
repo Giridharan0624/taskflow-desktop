@@ -272,8 +272,10 @@ func (m *Manager) Stop() {
 // ShowBalloon displays a Windows notification balloon from the tray icon.
 func (m *Manager) ShowBalloon(title, message string) {
 	if !m.running {
+		log.Println("ShowBalloon skipped: tray not running")
 		return
 	}
+	log.Printf("ShowBalloon: %s — %s", title, message)
 	copy(m.nid.SzInfoTitle[:], utf16(title))
 	copy(m.nid.SzInfo[:], utf16(message))
 	m.nid.DwInfoFlags = 0x00000001 // NIIF_INFO

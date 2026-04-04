@@ -25,8 +25,9 @@ var (
 	pGetDCSS             = user32ForScreenshot.NewProc("GetDC")
 	pReleaseDCSS         = user32ForScreenshot.NewProc("ReleaseDC")
 	pGetSystemMetrics    = user32ForScreenshot.NewProc("GetSystemMetrics")
-	pGetForegroundWindowSS = user32ForScreenshot.NewProc("GetForegroundWindow")
 	pGetDesktopWindow    = user32ForScreenshot.NewProc("GetDesktopWindow")
+	pOpenInputDesktop    = user32ForScreenshot.NewProc("OpenInputDesktop")
+	pCloseDesktop        = user32ForScreenshot.NewProc("CloseDesktop")
 )
 
 const (
@@ -65,18 +66,17 @@ func NewScreenshotCapture() *ScreenshotCapture {
 	return &ScreenshotCapture{}
 }
 
-// IsScreenLocked checks if the Windows workstation is locked.
+// IsScreenLocked checks if the Windows workstation is locked
+// by attempting to open the input desktop. If the secure desktop
+// (lock screen / UAC) is active, this call fails — meaning the
+// screen is truly locked. Idle time alone is NOT a reliable signal.
 func (sc *ScreenshotCapture) IsScreenLocked() bool {
-	// Check if the foreground window is null (screen locked or no active window)
-	hwnd, _, _ := pGetForegroundWindowSS.Call()
-	if hwnd == 0 {
-		return true
+	hDesk, _, _ := pOpenInputDesktop.Call(0, 0, 0) // DESKTOP_NONE
+	if hDesk == 0 {
+		return true // secure desktop active → locked
 	}
-
-	// Additional check: try to detect lock screen by checking desktop input
-	idle := NewIdleDetector()
-	// If idle for more than 10 minutes, likely locked
-	return idle.GetIdleSeconds() > 600
+	pCloseDesktop.Call(hDesk)
+	return false
 }
 
 // CaptureScreen takes a screenshot and returns it as JPEG bytes.
