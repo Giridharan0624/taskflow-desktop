@@ -274,6 +274,48 @@ func (c *Client) SendActivityHeartbeat(data map[string]interface{}) error {
 	return nil
 }
 
+// UploadScreenshot uploads a screenshot to S3 via presigned URL.
+// Returns the CDN URL of the uploaded file.
+func (c *Client) UploadScreenshot(jpegData []byte, filename string) (string, error) {
+	// Step 1: Get presigned URL
+	req, err := c.request()
+	if err != nil {
+		return "", err
+	}
+
+	presignURL := fmt.Sprintf("/uploads/presign?type=screenshot&filename=%s&contentType=image/jpeg", filename)
+	resp, err := req.Get(presignURL)
+	if err != nil {
+		return "", fmt.Errorf("presign network error: %w", err)
+	}
+	if resp.StatusCode() != 200 {
+		return "", fmt.Errorf("presign failed %d: %s", resp.StatusCode(), resp.String())
+	}
+
+	converted := snakeToCamel(resp.Body())
+	var presignResp struct {
+		UploadURL string `json:"uploadUrl"`
+		FileURL   string `json:"fileUrl"`
+	}
+	if err := json.Unmarshal(converted, &presignResp); err != nil {
+		return "", fmt.Errorf("failed to parse presign response: %w", err)
+	}
+
+	// Step 2: Upload directly to S3
+	s3Resp, err := c.http.R().
+		SetHeader("Content-Type", "image/jpeg").
+		SetBody(jpegData).
+		Put(presignResp.UploadURL)
+	if err != nil {
+		return "", fmt.Errorf("S3 upload network error: %w", err)
+	}
+	if s3Resp.StatusCode() != 200 {
+		return "", fmt.Errorf("S3 upload failed %d", s3Resp.StatusCode())
+	}
+
+	return presignResp.FileURL, nil
+}
+
 // snakeToCamel is a helper to convert snake_case JSON keys to camelCase.
 // The backend returns snake_case; the frontend/Go structs use camelCase tags.
 // Handles both objects and arrays at the top level.

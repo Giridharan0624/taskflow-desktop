@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -13,6 +14,12 @@ import (
 const (
 	// HeartbeatInterval is how often activity data is sent to the backend.
 	HeartbeatInterval = 5 * time.Minute
+
+	// ScreenshotInterval is how often screenshots are taken.
+	ScreenshotInterval = 10 * time.Minute
+
+	// ScreenshotWarningTime is the notification shown before capture.
+	ScreenshotWarningTime = 3 * time.Second
 )
 
 // ActivityBucket holds aggregated activity data for a 5-minute window.
@@ -34,13 +41,15 @@ type ActivityMonitor struct {
 	windowTracker *WindowTracker
 	idleDetector  *IdleDetector
 	inputTracker  *InputTracker
+	screenshotCap *ScreenshotCapture
 
 	// Current bucket counters (reset every 5 min)
-	keyboardCount int
-	mouseCount    int
-	activeSeconds int
-	idleSeconds   int
-	appUsage      map[string]int // app name → seconds in current bucket
+	keyboardCount   int
+	mouseCount      int
+	activeSeconds   int
+	idleSeconds     int
+	appUsage        map[string]int // app name → seconds in current bucket
+	lastScreenshot  string         // CDN URL of last screenshot taken
 
 	running  bool
 	stopChan chan struct{}
@@ -54,6 +63,7 @@ func NewActivityMonitor(apiClient *api.Client, appState *state.AppState) *Activi
 		windowTracker: NewWindowTracker(),
 		idleDetector:  NewIdleDetector(),
 		inputTracker:  NewInputTracker(),
+		screenshotCap: NewScreenshotCapture(),
 		appUsage:      make(map[string]int),
 		stopChan:      make(chan struct{}),
 	}
@@ -73,6 +83,7 @@ func (m *ActivityMonitor) Start(ctx context.Context) {
 	log.Println("Activity monitor started")
 
 	go m.trackActivity(ctx)
+	go m.captureScreenshots(ctx)
 	go m.sendHeartbeats(ctx)
 }
 
@@ -190,6 +201,9 @@ func (m *ActivityMonitor) sendCurrentBucket() {
 		"top_app":        topApp,
 		"app_breakdown":  m.appUsage,
 	}
+	if m.lastScreenshot != "" {
+		bucket["screenshot_url"] = m.lastScreenshot
+	}
 
 	m.resetBucketLocked()
 	m.mu.Unlock()
@@ -216,4 +230,62 @@ func (m *ActivityMonitor) resetBucketLocked() {
 	m.activeSeconds = 0
 	m.idleSeconds = 0
 	m.appUsage = make(map[string]int)
+	m.lastScreenshot = ""
+}
+
+// captureScreenshots takes a screenshot every 10 minutes while the timer is active.
+func (m *ActivityMonitor) captureScreenshots(ctx context.Context) {
+	ticker := time.NewTicker(ScreenshotInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-m.stopChan:
+			return
+		case <-ticker.C:
+			if !m.appState.IsTimerActive() {
+				continue
+			}
+			m.takeAndUploadScreenshot()
+		}
+	}
+}
+
+// takeAndUploadScreenshot captures the screen, uploads to S3, and stores the URL.
+func (m *ActivityMonitor) takeAndUploadScreenshot() {
+	// 3-second warning
+	ShowNotification("TaskFlow", "Screenshot in 3 seconds...")
+	time.Sleep(ScreenshotWarningTime)
+
+	// Skip if screen is locked
+	if m.screenshotCap.IsScreenLocked() {
+		log.Println("Screenshot skipped: screen is locked")
+		return
+	}
+
+	// Capture
+	jpegData, err := m.screenshotCap.CaptureScreenDefault()
+	if err != nil {
+		log.Printf("Screenshot capture failed: %v", err)
+		return
+	}
+
+	// Generate filename with timestamp
+	filename := fmt.Sprintf("screenshot_%s.jpg", time.Now().UTC().Format("20060102_150405"))
+
+	// Upload to S3
+	cdnURL, err := m.apiClient.UploadScreenshot(jpegData, filename)
+	if err != nil {
+		log.Printf("Screenshot upload failed: %v", err)
+		return
+	}
+
+	// Store URL for next heartbeat
+	m.mu.Lock()
+	m.lastScreenshot = cdnURL
+	m.mu.Unlock()
+
+	log.Printf("Screenshot uploaded: %s (%d KB)", cdnURL, len(jpegData)/1024)
 }

@@ -2,6 +2,7 @@ import { useState } from "preact/hooks";
 import type { User, LoginResult } from "../app";
 import { useTheme } from "../lib/useTheme";
 import { TaskFlowLogo } from "./Logo";
+import { friendlyError } from "../lib/errors";
 
 interface LoginFormProps {
   onSuccess: (user: User) => void;
@@ -25,7 +26,7 @@ export function LoginForm({ onSuccess }: LoginFormProps) {
       if (result.requiresNewPassword) { setChallengeSession(result.session!); setLoading(false); return; }
       onSuccess(await window.go.main.App.GetCurrentUser());
     } catch (err: any) {
-      setError(typeof err === "string" ? err : err?.message || "Login failed");
+      setError(friendlyError(err));
     } finally { setLoading(false); }
   }
 
@@ -37,7 +38,7 @@ export function LoginForm({ onSuccess }: LoginFormProps) {
       await window.go.main.App.SetNewPassword(challengeSession!, newPassword);
       onSuccess(await window.go.main.App.GetCurrentUser());
     } catch (err: any) {
-      setError(typeof err === "string" ? err : err?.message || "Failed");
+      setError(friendlyError(err));
     } finally { setLoading(false); }
   }
 

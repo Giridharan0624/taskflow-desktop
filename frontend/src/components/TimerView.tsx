@@ -9,6 +9,7 @@ import { Timer, formatDuration } from "./Timer";
 import { TaskSelector } from "./TaskSelector";
 import { TaskFlowLogo } from "./Logo";
 import { useTheme } from "../lib/useTheme";
+import { friendlyError } from "../lib/errors";
 
 interface TimerViewProps {
   user: User;
@@ -82,14 +83,14 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
       const r = await window.go.main.App.SignIn(data);
       setAttendance(patchAttendance(r));
     } catch (err: any) {
-      const msg = typeof err === "string" ? err : err?.message || "";
-      if (msg.includes("already signed in")) {
-        _optimisticSignInAt = null; // Don't override server time for existing session
+      const raw = typeof err === "string" ? err : err?.message || "";
+      if (raw.includes("already signed in")) {
+        _optimisticSignInAt = null;
         const c = await window.go.main.App.GetMyAttendance().catch(() => null);
         if (c) setAttendance(c);
       } else {
         _optimisticSignInAt = null;
-        setError(msg || "Failed to start timer");
+        setError(friendlyError(err));
       }
     } finally {
       setLoading(false);
@@ -103,8 +104,7 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
     try {
       setAttendance(await window.go.main.App.SignOut());
     } catch (err: any) {
-      const msg = typeof err === "string" ? err : err?.message || "";
-      setError(msg || "Failed to stop timer");
+      setError(friendlyError(err));
     } finally {
       setLoading(false);
     }
