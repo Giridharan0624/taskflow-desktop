@@ -1,295 +1,277 @@
-# TaskFlow Desktop — macOS & Linux Plan
+# TaskFlow Desktop — Cross-Platform Plan (Windows + Linux + macOS)
 
-## Current State (Windows Only)
+## Current State
 
-The desktop app uses several Windows-specific APIs:
+The Windows desktop app is **in production with active users**. Development for Linux and macOS happens on a separate branch — main branch stays untouched until fully tested.
 
-| Feature | Windows API Used | Portable? |
-|---------|-----------------|-----------|
-| Activity tracking | `GetAsyncKeyState` (user32.dll) | No |
-| Mouse tracking | `GetCursorPos` (user32.dll) | No |
-| Window tracking | `GetForegroundWindow` (user32.dll) | No |
-| Idle detection | `GetLastInputInfo` (user32.dll) | No |
-| Screenshots | `BitBlt` (gdi32.dll) | No |
-| Token encryption | DPAPI (`CryptProtectData`) | No |
-| System tray | `Shell_NotifyIcon` (shell32.dll) | No |
-| Tray menu | Win32 popup menus | No |
-| Tray icon overlay | GDI bitmap manipulation | No |
-| Installer | NSIS | No |
+```
+main branch              → Current Windows app (production, active users)
+feature/cross-platform   → New cross-platform version (develop + test here)
+                           ↓ merge only after all 3 platforms tested
+                         main → Release new version to all platforms
+```
 
-**14 files with Windows-specific code** need platform alternatives.
+Windows users only get the update when a new GitHub release is published.
 
 ---
 
-## Architecture Change
+## Cross-Platform Libraries
 
-### Current (Windows Only)
-```
-internal/monitor/
-  ├── input.go          ← Win32 GetAsyncKeyState
-  ├── window.go         ← Win32 GetForegroundWindow
-  ├── idle.go           ← Win32 GetLastInputInfo
-  ├── screenshot.go     ← Win32 BitBlt + GDI
-internal/auth/
-  └── crypto.go         ← Win32 DPAPI
-internal/tray/
-  └── tray.go           ← Win32 Shell_NotifyIcon
-```
+Instead of writing separate implementations per platform (21+ files), we use 3 libraries that work on all platforms:
 
-### Proposed (Cross-Platform)
-```
-internal/monitor/
-  ├── input_windows.go      ← Win32 GetAsyncKeyState
-  ├── input_darwin.go       ← CGEventTap (macOS)
-  ├── input_linux.go        ← /dev/input or X11
-  ├── window_windows.go     ← Win32 GetForegroundWindow
-  ├── window_darwin.go      ← NSWorkspace (macOS)
-  ├── window_linux.go       ← X11 _NET_ACTIVE_WINDOW
-  ├── idle_windows.go       ← Win32 GetLastInputInfo
-  ├── idle_darwin.go        ← IOKit HIDIdleTime
-  ├── idle_linux.go         ← X11 XScreenSaverQueryInfo
-  ├── screenshot_windows.go ← Win32 BitBlt
-  ├── screenshot_darwin.go  ← CGWindowListCreateImage
-  ├── screenshot_linux.go   ← X11 XGetImage or PipeWire
-  ├── activity.go           ← Shared (no changes)
-  └── interfaces.go         ← Shared interfaces
-internal/auth/
-  ├── crypto_windows.go     ← DPAPI
-  ├── crypto_darwin.go      ← macOS Keychain (Security.framework)
-  └── crypto_linux.go       ← libsecret or GNOME Keyring
-internal/tray/
-  ├── tray_windows.go       ← Shell_NotifyIcon
-  ├── tray_darwin.go        ← NSStatusBar
-  └── tray_linux.go         ← libappindicator or systray
-```
+| Feature | Library | Stars | Win | Linux | Mac | CGo |
+|---------|---------|-------|-----|-------|-----|-----|
+| Keyboard + Mouse | `go-vgo/robotgo` | 10.3k | Yes | Yes | Yes | Yes |
+| Screenshots | `kbinani/screenshot` | 1.5k | Yes | Yes | Yes | Yes |
+| System Tray | `fyne.io/systray` | 337 | Yes | Yes | Yes | Yes |
 
-Go's **build tags** (`//go:build darwin`, `//go:build linux`) handle platform selection at compile time — no runtime checks needed.
+Only **2 features** need per-platform code (no library exists):
+
+| Feature | Per-platform lines | Why |
+|---------|-------------------|-----|
+| Idle detection | ~30 lines each | No cross-platform library |
+| Active window name | ~50 lines each | No library exists |
 
 ---
 
-## macOS Plan
+## File Changes
 
-### Requirements
-- macOS 12+ (Monterey)
-- Apple Silicon (arm64) + Intel (amd64) universal binary
-- Wails v2 uses WebKit on macOS (built-in, no downloads needed)
+### Replaced by Cross-Platform Libraries
 
-### Platform-Specific Implementations
+| Current File (Win32) | Lines | Replaced By |
+|----------------------|-------|-------------|
+| `internal/monitor/input.go` | 94 | `robotgo` (one file, all platforms) |
+| `internal/monitor/screenshot.go` | 209 | `kbinani/screenshot` (one file, all platforms) |
+| `internal/tray/tray.go` | 546 | `fyne.io/systray` (one file, all platforms) |
 
-| Feature | macOS Implementation | Notes |
-|---------|---------------------|-------|
-| **Activity tracking** | `CGEventTap` via cgo | Requires Accessibility permission |
-| **Mouse tracking** | `CGEventTap` (mouse events) | Same permission as keyboard |
-| **Window tracking** | `NSWorkspace.shared.frontmostApplication` | No extra permissions |
-| **Idle detection** | `IOKit HIDIdleTime` property | No permissions needed |
-| **Screenshots** | `CGWindowListCreateImage` | Requires Screen Recording permission |
-| **Token encryption** | macOS Keychain (`SecItemAdd`) | Built-in, encrypted by OS |
-| **System tray** | `NSStatusBar` / `NSStatusItem` | Native menu bar icon |
-| **Installer** | `.dmg` disk image | Standard macOS distribution |
-| **Auto-start** | Login Items (SMAppService) | macOS 13+ API |
-| **Notifications** | `NSUserNotification` / `UNUserNotification` | Standard macOS alerts |
+### Renamed with Build Tags
 
-### Permissions Required
+| Current | Renamed To |
+|---------|-----------|
+| `internal/monitor/window.go` | `internal/monitor/window_windows.go` |
+| `internal/monitor/idle.go` | `internal/monitor/idle_windows.go` |
+| `internal/auth/crypto.go` | `internal/auth/crypto_windows.go` |
+| `internal/auth/keystore.go` | `internal/auth/keystore_windows.go` |
 
-| Permission | macOS Prompt | Why |
-|-----------|-------------|-----|
-| **Accessibility** | "TaskFlow wants to monitor input" | Keyboard/mouse tracking |
-| **Screen Recording** | "TaskFlow wants to record screen" | Screenshots |
-| **Notifications** | "TaskFlow wants to send notifications" | Screenshot warnings |
+### New Files
 
-Users must grant these in **System Preferences → Privacy & Security**. The app should detect missing permissions and guide the user.
+```
+Cross-platform (no build tags — works everywhere):
+  internal/monitor/input.go            — robotgo keyboard + mouse
+  internal/monitor/screenshot.go       — kbinani/screenshot
+  internal/monitor/appnames.go         — friendlyAppName mapping (shared)
+  internal/tray/types.go               — ActionHandler struct (shared)
+  internal/tray/tray.go                — fyne.io/systray
+  Makefile                             — Cross-platform build targets
 
-### Build & Distribution
+Windows-specific (existing, add build tag):
+  internal/monitor/window_windows.go   — Win32 GetForegroundWindow
+  internal/monitor/idle_windows.go     — Win32 GetLastInputInfo
+  internal/auth/crypto_windows.go      — DPAPI encryption
+  internal/auth/keystore_windows.go    — Chunked keyring (Win Credential Manager limit)
+  main_windows.go                      — APPDATA paths + windows.Options
+  internal/updater/install_windows.go  — .exe asset finder
 
+Linux-specific (new):
+  internal/monitor/window_linux.go     — X11 _NET_ACTIVE_WINDOW + /proc/pid/exe
+  internal/monitor/idle_linux.go       — X11 XScreenSaver extension
+  internal/auth/crypto_linux.go        — No-op (secret-service encrypts)
+  internal/auth/keystore_linux.go      — Direct keyring (no chunking)
+  main_linux.go                        — XDG paths + linux.Options
+  internal/updater/install_linux.go    — .AppImage asset finder
+  build.sh                             — Linux build script
+  build-appimage.sh                    — AppImage packaging
+  build/linux/taskflow.desktop         — Freedesktop desktop entry
+  build/linux/icon.png                 — App icon
+
+macOS-specific (new):
+  internal/monitor/window_darwin.go    — NSWorkspace frontmostApplication
+  internal/monitor/idle_darwin.go      — IOKit HIDIdleTime
+  internal/auth/crypto_darwin.go       — No-op (Keychain encrypts)
+  internal/auth/keystore_darwin.go     — Direct keyring (no chunking)
+  main_darwin.go                       — ~/Library paths + mac.Options
+  internal/updater/install_darwin.go   — .dmg asset finder
+  build-mac.sh                         — macOS build + .dmg + code signing
+  build/darwin/icon.icns               — macOS icon
+
+Unchanged (already cross-platform):
+  app.go, internal/api/client.go, internal/config/config.go,
+  internal/state/state.go, internal/auth/cognito.go,
+  internal/monitor/activity.go, internal/updater/updater.go,
+  frontend/* (all Preact/TypeScript)
+```
+
+---
+
+## Implementation Phases
+
+### Phase 1: Branch + Replace Libraries (Days 1-2)
+
+1. Create `feature/cross-platform` branch
+2. Replace `input.go` with robotgo-based implementation (all platforms)
+3. Replace `screenshot.go` with kbinani/screenshot (all platforms)
+4. Replace `tray.go` with fyne.io/systray (all platforms)
+5. Extract shared code: `appnames.go`, `types.go`
+6. Verify Windows still builds
+
+### Phase 2: Platform-Specific Code (Days 3-4)
+
+**Idle detection** (3 small files):
+- Windows: `GetLastInputInfo` (existing, rename)
+- Linux: X11 `XScreenSaverQueryInfo` via `BurntSushi/xgb`
+- macOS: `IOKit HIDIdleTime` via CGo
+
+**Active window** (3 small files):
+- Windows: `GetForegroundWindow` (existing, rename)
+- Linux: X11 `_NET_ACTIVE_WINDOW` → `/proc/[pid]/exe`
+- macOS: `NSWorkspace.frontmostApplication` via CGo
+
+**Auth/Crypto** (3 × 2 files):
+- Windows: DPAPI + chunked keyring (existing, rename)
+- Linux: No-op crypto + direct keyring
+- macOS: No-op crypto + direct keyring
+
+### Phase 3: Entry Points + Updater (Day 5)
+
+**Main entry** (3 files):
+- Windows: APPDATA log dir, windows.Options (existing, rename)
+- Linux: `~/.local/share/TaskFlow/`, linux.Options
+- macOS: `~/Library/Application Support/TaskFlow/`, mac.Options
+
+**Updater install** (3 files):
+- Windows: Find `.exe` asset, launch installer
+- Linux: Find `.AppImage`, chmod +x, replace binary
+- macOS: Find `.dmg`, open for user
+
+### Phase 4: Build + Packaging (Days 6-7)
+
+**Makefile**:
+```makefile
+windows:
+    wails build -platform windows/amd64 -ldflags "$(LDFLAGS)"
+linux:
+    wails build -platform linux/amd64 -ldflags "$(LDFLAGS)"
+mac:
+    wails build -platform darwin/universal -ldflags "$(LDFLAGS)"
+all: windows linux mac
+```
+
+**Linux packaging**: AppImage (universal, no install needed)
+**macOS packaging**: .dmg + code signing + notarization ($99/yr Apple Developer)
+**Windows packaging**: NSIS installer (existing)
+
+### Phase 5: Testing (Days 8-9)
+
+| Platform | Environment | Verify |
+|----------|-------------|--------|
+| Windows 10/11 | Dev machine | No regression |
+| Ubuntu 22.04 (X11) | VM | All features work |
+| Ubuntu 24.04 (Wayland) | VM | Graceful degradation |
+| Fedora 38+ | VM | All features work |
+| macOS 13+ (Intel) | Mac hardware | All features + permissions |
+| macOS 14+ (Apple Silicon) | Mac hardware | Universal binary works |
+
+---
+
+## Build Dependencies
+
+### Windows (existing)
+```
+Go 1.22+, Node.js 18+, Wails CLI, NSIS, GCC (MinGW)
+```
+
+### Linux (new)
 ```bash
-# Build universal binary (arm64 + amd64)
-wails build -platform darwin/universal
+# Ubuntu/Debian
+sudo apt install gcc webkit2gtk-4.0-dev gtk3-dev \
+  libayatana-appindicator3-dev libx11-dev libxtst-dev \
+  libxkbcommon-dev xcb libxcb-xkb-dev
 
-# Create .dmg installer
-create-dmg \
-  --volname "TaskFlow Desktop" \
-  --window-size 600 400 \
-  --app-drop-link 400 200 \
-  "TaskFlowDesktop-1.0.0.dmg" \
-  "build/bin/TaskFlow Desktop.app"
+# Fedora
+sudo dnf install gcc webkit2gtk4.0-devel gtk3-devel \
+  libappindicator-gtk3-devel libX11-devel libXtst-devel
 ```
 
-### Code Signing (Required for macOS)
-
-macOS **requires** code signing for:
-- Gatekeeper to allow the app
-- Notarization for distribution outside App Store
-- Accessibility/Screen Recording permissions
-
-```bash
-# Sign with Developer ID
-codesign --deep --force --sign "Developer ID Application: NEUROSTACK" \
-  "build/bin/TaskFlow Desktop.app"
-
-# Notarize with Apple
-xcrun notarytool submit TaskFlowDesktop-1.0.0.dmg \
-  --apple-id "dev@neurostack.in" \
-  --team-id "XXXXXXXXXX" \
-  --wait
+### macOS (new)
 ```
-
-**Cost:** Apple Developer Program = $99/year
-
-### Estimated Effort: 2-3 weeks
-
-| Task | Days |
-|------|------|
-| Input monitoring (CGEventTap) | 3 |
-| Window tracking (NSWorkspace) | 1 |
-| Idle detection (IOKit) | 1 |
-| Screenshots (CGWindowListCreateImage) | 2 |
-| Keychain integration | 1 |
-| System tray (NSStatusBar) | 2 |
-| Permission flow (Accessibility, Screen Recording) | 2 |
-| .dmg installer + code signing + notarization | 2 |
-| Testing on Intel + Apple Silicon | 1 |
+Xcode, create-dmg (brew install create-dmg)
+Apple Developer certificate ($99/year for code signing)
+```
 
 ---
 
-## Linux Plan
+## Distribution
 
-### Requirements
-- Ubuntu 20.04+ / Fedora 35+ / Arch (current)
-- X11 or Wayland display server
-- Wails v2 uses `webkit2gtk` on Linux
+| Platform | Format | Auto-Update Asset | Size |
+|----------|--------|-------------------|------|
+| Windows | NSIS installer (`.exe`) | `.exe` in GitHub release | ~5 MB |
+| Linux | AppImage | `.AppImage` in GitHub release | ~15 MB |
+| macOS | DMG (`.dmg`) | `.dmg` in GitHub release | ~10 MB |
 
-### Platform-Specific Implementations
+GitHub release example:
+```
+v1.1.0
+├── TaskFlowDesktop-Setup-1.1.0.exe          (Windows)
+├── TaskFlow-1.1.0-x86_64.AppImage           (Linux)
+└── TaskFlowDesktop-1.1.0-universal.dmg      (macOS)
+```
 
-| Feature | Linux Implementation | Notes |
-|---------|---------------------|-------|
-| **Activity tracking** | `/dev/input` (evdev) or X11 `XQueryKeymap` | Needs root or input group |
-| **Mouse tracking** | `/dev/input` or X11 `XQueryPointer` | Same as keyboard |
-| **Window tracking** | X11 `_NET_ACTIVE_WINDOW` or `xdotool` | Wayland: `wlr-foreign-toplevel` |
-| **Idle detection** | X11 `XScreenSaverQueryInfo` | Wayland: `ext-idle-notify-v1` |
-| **Screenshots** | X11 `XGetImage` or PipeWire | Wayland: `xdg-desktop-portal` |
-| **Token encryption** | libsecret (GNOME Keyring) or KWallet | Depends on desktop environment |
-| **System tray** | libappindicator / StatusNotifierItem | Some DEs removed tray support |
-| **Installer** | `.AppImage` (universal) or `.deb` / `.rpm` | AppImage needs no install |
-| **Auto-start** | `~/.config/autostart/taskflow.desktop` | XDG autostart standard |
-| **Notifications** | `notify-send` or D-Bus `org.freedesktop.Notifications` | Standard on all DEs |
+---
 
-### X11 vs Wayland Challenge
+## Wayland Limitations (Linux)
+
+Wayland intentionally blocks global input monitoring for security. On pure Wayland:
 
 | Feature | X11 | Wayland |
 |---------|-----|---------|
-| Input monitoring | Easy (XQueryKeymap) | **Blocked** — by design |
-| Window tracking | Easy (_NET_ACTIVE_WINDOW) | Limited (needs portal) |
-| Screenshots | Easy (XGetImage) | Needs `xdg-desktop-portal` |
-| Idle detection | Easy (XScreenSaver) | Needs `ext-idle-notify` |
+| Keyboard/mouse counts | Full (robotgo) | Limited (robotgo uses XWayland) |
+| Active window | Full | Returns "Unknown" |
+| Screenshots | Full | Uses xdg-desktop-portal (user permission dialog) |
+| Idle detection | Full (XScreenSaver) | Uses logind D-Bus (works) |
 
-**Wayland intentionally blocks input monitoring** for security. Options:
-1. Require X11 (or XWayland) — simplest
-2. Use Wayland portals — limited, needs user approval each time
-3. Use evdev (`/dev/input`) — needs `input` group membership
-
-### Build & Distribution
-
-```bash
-# Build
-wails build -platform linux/amd64
-
-# Create AppImage (universal, no install needed)
-linuxdeploy --appdir AppDir \
-  --executable build/bin/taskflow-desktop \
-  --desktop-file taskflow.desktop \
-  --icon-file icon.png \
-  --output appimage
-
-# Or create .deb package
-dpkg-deb --build taskflow-desktop_1.0.0_amd64
-```
-
-### Dependencies
-
-```bash
-# Ubuntu/Debian
-sudo apt install webkit2gtk-4.0-dev libappindicator3-dev libsecret-1-dev
-
-# Fedora
-sudo dnf install webkit2gtk4.0-devel libappindicator-gtk3-devel libsecret-devel
-```
-
-### Estimated Effort: 3-4 weeks
-
-| Task | Days |
-|------|------|
-| Input monitoring (evdev / X11) | 4 |
-| Wayland compatibility research + fallbacks | 3 |
-| Window tracking (X11 + Wayland) | 2 |
-| Idle detection (XScreenSaver + Wayland) | 1 |
-| Screenshots (X11 + xdg-desktop-portal) | 3 |
-| libsecret keyring integration | 1 |
-| System tray (libappindicator) | 2 |
-| AppImage / .deb packaging | 2 |
-| Testing on Ubuntu, Fedora, Arch | 2 |
+Most Wayland compositors run XWayland, so robotgo still works for input monitoring.
 
 ---
 
-## Shared Code (No Changes Needed)
+## macOS Permissions
 
-These files work on all platforms without modification:
+| Permission | Prompt | Required For |
+|-----------|--------|-------------|
+| Accessibility | "TaskFlow wants to monitor input" | Keyboard/mouse tracking |
+| Screen Recording | "TaskFlow wants to record screen" | Screenshots |
+| Notifications | "TaskFlow wants to send notifications" | Screenshot warnings |
 
-| File | Why |
-|------|-----|
-| `app.go` | Pure Go, Wails runtime |
-| `main.go` | Wails entry point |
-| `internal/api/client.go` | HTTP client (net/http) |
-| `internal/auth/cognito.go` | AWS SDK (pure Go) |
-| `internal/auth/keystore.go` | Calls platform crypto, no OS deps |
-| `internal/config/config.go` | Build-time injection |
-| `internal/state/state.go` | In-memory state |
-| `internal/updater/updater.go` | HTTP + JSON (pure Go) |
-| `internal/monitor/activity.go` | Orchestrator (calls platform interfaces) |
-| `frontend/*` | Preact UI (runs in WebView) |
-
-**~60% of the codebase is already cross-platform.**
+App must detect missing permissions and guide user to System Settings → Privacy & Security.
 
 ---
 
-## Recommended Order
+## Risks
 
-1. **macOS first** — larger market share, more consistent platform (no X11/Wayland split)
-2. **Linux second** — smaller audience, more fragmentation (distros, display servers)
-
----
-
-## CI/CD for Multi-Platform
-
-```yaml
-# GitHub Actions — build on all platforms
-jobs:
-  build:
-    strategy:
-      matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: { go-version: '1.22' }
-      - uses: actions/setup-node@v4
-        with: { node-version: '18' }
-      - run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
-      - run: wails build
-      - uses: actions/upload-artifact@v4
-        with:
-          name: taskflow-desktop-${{ matrix.os }}
-          path: build/bin/*
-```
+| Risk | Impact | Mitigation |
+|------|--------|-----------|
+| robotgo CGo breaks Windows build | High | Test Windows first after adding |
+| fyne.io/systray conflicts with Wails | Medium | Fallback: raw D-Bus / NSStatusBar |
+| GNOME 40+ has no tray | Low | Document AppIndicator extension |
+| macOS code signing costs $99/yr | Low | Distribute unsigned for testing |
+| robotgo needs GCC everywhere | Medium | Document dependencies clearly |
 
 ---
 
-## Summary
+## Timeline
 
-| Platform | Effort | Key Challenge | Distribution |
-|----------|--------|---------------|-------------|
-| **Windows** | Done | N/A | NSIS installer (.exe) |
-| **macOS** | 2-3 weeks | Code signing ($99/yr), permissions | .dmg + notarization |
-| **Linux** | 3-4 weeks | Wayland input blocking | AppImage / .deb / .rpm |
+| Phase | Days | What |
+|-------|------|------|
+| 1. Branch + cross-platform libraries | 2 | Replace Win32 with robotgo, kbinani, systray |
+| 2. Platform-specific (idle, window, auth) | 2 | 9 small files (3 per platform) |
+| 3. Entry points + updater | 1 | 6 files (2 per platform) |
+| 4. Build scripts + packaging | 2 | Makefile, AppImage, .dmg, NSIS |
+| 5. Testing all platforms | 2 | VMs + real hardware |
+| **Total** | **9 days** | |
 
-Total estimated effort for full cross-platform: **5-7 weeks**.
+---
+
+## Author
+
+Developed by **Giridharan S** at **NEUROSTACK**
+
+Copyright 2026 NEUROSTACK. All rights reserved.
