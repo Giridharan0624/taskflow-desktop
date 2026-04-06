@@ -21,10 +21,6 @@ const (
 	maxChunkSize = 2000
 )
 
-type tokenMeta struct {
-	ExpiresAt int64 `json:"expiresAt"`
-}
-
 // saveTokensToKeyring encrypts tokens with DPAPI then stores in OS keychain.
 // Large tokens are split into multiple entries to stay under the Windows limit.
 func (s *Service) saveTokensToKeyring() error {

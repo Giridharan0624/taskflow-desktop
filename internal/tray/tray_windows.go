@@ -146,13 +146,6 @@ type RECT struct {
 	Left, Top, Right, Bottom int32
 }
 
-// ActionHandler defines callbacks for tray menu actions.
-type ActionHandler struct {
-	OnShowWindow func()
-	OnStopTimer  func()
-	OnQuit       func()
-}
-
 // Manager manages the system tray icon.
 type Manager struct {
 	mu          sync.Mutex

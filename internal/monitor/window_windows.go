@@ -3,7 +3,6 @@
 package monitor
 
 import (
-	"strings"
 	"syscall"
 	"unsafe"
 
@@ -78,49 +77,4 @@ func (w *WindowTracker) GetActiveWindowApp() string {
 	return friendlyAppName(exePath)
 }
 
-// friendlyAppName converts an exe path to a friendly display name.
-func friendlyAppName(exePath string) string {
-	// Extract filename from path
-	parts := strings.Split(strings.ReplaceAll(exePath, "\\", "/"), "/")
-	fileName := parts[len(parts)-1]
-
-	// Remove .exe extension
-	name := strings.TrimSuffix(fileName, ".exe")
-	name = strings.TrimSuffix(name, ".EXE")
-
-	// Map known executables to friendly names
-	knownApps := map[string]string{
-		"Code":             "VS Code",
-		"code":             "VS Code",
-		"chrome":           "Chrome",
-		"msedge":           "Edge",
-		"firefox":          "Firefox",
-		"slack":            "Slack",
-		"Discord":          "Discord",
-		"Postman":          "Postman",
-		"WindowsTerminal":  "Terminal",
-		"cmd":              "Command Prompt",
-		"powershell":       "PowerShell",
-		"pwsh":             "PowerShell",
-		"explorer":         "File Explorer",
-		"WINWORD":          "Word",
-		"EXCEL":            "Excel",
-		"POWERPNT":         "PowerPoint",
-		"OUTLOOK":          "Outlook",
-		"Teams":            "Teams",
-		"notepad":          "Notepad",
-		"devenv":           "Visual Studio",
-		"idea64":           "IntelliJ IDEA",
-		"webstorm64":       "WebStorm",
-		"goland64":         "GoLand",
-		"figma":            "Figma",
-		"Notion":           "Notion",
-		"Obsidian":         "Obsidian",
-	}
-
-	if friendly, ok := knownApps[name]; ok {
-		return friendly
-	}
-
-	return name
-}
+// friendlyAppName is now in appnames.go (shared across all platforms).

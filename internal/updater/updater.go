@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -83,20 +82,11 @@ func CheckForUpdate() (*UpdateInfo, error) {
 		return &UpdateInfo{Available: false, CurrentVer: CurrentVersion, Version: latestVer}, nil
 	}
 
-	// Find the .exe asset
-	var downloadURL, fileName string
-	var size int
-	for _, asset := range release.Assets {
-		if strings.HasSuffix(strings.ToLower(asset.Name), ".exe") {
-			downloadURL = asset.BrowserDownloadURL
-			fileName = asset.Name
-			size = asset.Size
-			break
-		}
-	}
+	// Find the platform-specific asset
+	downloadURL, fileName, size := findPlatformAsset(release.Assets)
 
 	if downloadURL == "" {
-		return nil, fmt.Errorf("no .exe asset found in release %s", latestVer)
+		return nil, fmt.Errorf("no compatible asset found in release %s", latestVer)
 	}
 
 	return &UpdateInfo{
@@ -152,14 +142,11 @@ func DownloadAndInstall(info *UpdateInfo) error {
 
 	log.Printf("Downloaded to %s, launching installer...", destPath)
 
-	// Launch the downloaded installer/exe and exit current app
-	cmd := exec.Command(destPath)
-	cmd.Dir = tempDir
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to launch installer: %w", err)
+	// Launch the platform-specific installer and exit
+	if err := installUpdate(destPath); err != nil {
+		return fmt.Errorf("failed to install update: %w", err)
 	}
 
-	// Exit current app — the installer will replace it
 	os.Exit(0)
 	return nil
 }
