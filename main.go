@@ -15,6 +15,9 @@ import (
 var assets embed.FS
 
 func main() {
+	// Prevent multiple instances (platform-specific)
+	ensureSingleInstance()
+
 	// Platform-specific log directory setup
 	setupLogging()
 	log.Println("=== TaskFlow Desktop starting ===")

@@ -10,6 +10,10 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 )
 
+func ensureSingleInstance() {
+	// TODO: Use flock on a lockfile for Linux single-instance check
+}
+
 func setupLogging() {
 	// XDG_DATA_HOME or ~/.local/share
 	dataDir := os.Getenv("XDG_DATA_HOME")

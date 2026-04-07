@@ -11,6 +11,10 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
 )
 
+func ensureSingleInstance() {
+	// macOS apps are single-instance by default via NSApplication
+}
+
 func setupLogging() {
 	home, _ := os.UserHomeDir()
 	logDir := filepath.Join(home, "Library", "Application Support", "TaskFlow")

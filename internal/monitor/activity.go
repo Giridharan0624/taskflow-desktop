@@ -22,21 +22,10 @@ const (
 	ScreenshotWarningTime = 5 * time.Second
 )
 
-// ActivityBucket holds aggregated activity data for a 5-minute window.
-type ActivityBucket struct {
-	Timestamp     string         `json:"timestamp"`
-	KeyboardCount int            `json:"keyboardCount"`
-	MouseCount    int            `json:"mouseCount"`
-	ActiveSeconds int            `json:"activeSeconds"`
-	IdleSeconds   int            `json:"idleSeconds"`
-	TopApp        string         `json:"topApp"`
-	AppBreakdown  map[string]int `json:"appBreakdown"` // app name → seconds
-}
-
 // NotifyFunc is a callback for showing notifications (e.g., tray balloon).
 type NotifyFunc func(title, message string)
 
-// ActivityMonitor tracks keyboard and mouse activity using Win32 APIs.
+// ActivityMonitor tracks keyboard and mouse activity using platform-specific APIs.
 type ActivityMonitor struct {
 	mu            sync.Mutex
 	apiClient     *api.Client
