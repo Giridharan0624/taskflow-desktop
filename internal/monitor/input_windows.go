@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	procGetAsyncKeyState = user32.NewProc("GetAsyncKeyState")
+	procGetKeyboardState = user32.NewProc("GetKeyboardState")
 	procGetCursorPos     = user32.NewProc("GetCursorPos")
 )
 
@@ -46,16 +46,19 @@ func NewInputTracker() *InputTracker {
 
 // GetCounts returns current keyboard and mouse event totals.
 // Called every second from the activity tracker to compute deltas.
+// Uses GetKeyboardState (reads state without consuming events) instead of
+// GetAsyncKeyState (which clears the "pressed since last query" bit and
+// can eat key events before the WebView processes them).
 func (t *InputTracker) GetCounts() (keyboard uint32, mouse uint32) {
-	// Check keyboard: poll all virtual key codes (1-254)
-	// GetAsyncKeyState returns the key state — if the high bit is set, key is currently pressed
+	// Read entire keyboard state in one call — does NOT consume events
+	var keyStates [256]byte
+	procGetKeyboardState.Call(uintptr(unsafe.Pointer(&keyStates[0])))
+
 	keysPressed := 0
-	for vk := 1; vk < 255; vk++ {
-		ret, _, _ := procGetAsyncKeyState.Call(uintptr(vk))
-		isDown := (ret & 0x8000) != 0
+	for vk := 8; vk < 255; vk++ { // Skip mouse buttons (0x01-0x07)
+		isDown := (keyStates[vk] & 0x80) != 0
 		wasDown := t.lastKeyStates[vk]
 
-		// Count new key presses (transition from up to down)
 		if isDown && !wasDown {
 			keysPressed++
 		}
@@ -76,16 +79,12 @@ func (t *InputTracker) GetCounts() (keyboard uint32, mouse uint32) {
 		}
 	}
 
-	// Check mouse buttons (left=1, right=2, middle=4)
-	for _, vk := range []uintptr{
-		0x01, // VK_LBUTTON
-		0x02, // VK_RBUTTON
-		0x04, // VK_MBUTTON
-	} {
-		ret, _, _ := procGetAsyncKeyState.Call(vk)
-		if (ret & 0x8000) != 0 {
-			t.mouseTotal.Add(1)
-		}
+	// Check mouse buttons from keyboard state (high bit = pressed)
+	if (keyStates[0x01] & 0x80) != 0 { // VK_LBUTTON
+		t.mouseTotal.Add(1)
+	}
+	if (keyStates[0x02] & 0x80) != 0 { // VK_RBUTTON
+		t.mouseTotal.Add(1)
 	}
 
 	return t.keyboardTotal.Load(), t.mouseTotal.Load()
