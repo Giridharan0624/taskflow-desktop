@@ -6,9 +6,9 @@
 Push tag v1.1.0
     ↓
 GitHub Actions (3 parallel jobs):
-  ├── windows-latest → builds .exe + NSIS installer
-  ├── ubuntu-22.04   → builds binary + AppImage
-  └── macos-latest   → builds universal .app + .dmg
+  ├── windows-latest → builds .exe + NSIS installer (Windows 10/11)
+  ├── ubuntu-22.04   → builds AppImage (runs on ALL Linux distros)
+  └── macos-latest   → builds universal .dmg (Intel + Apple Silicon)
     ↓
 Release job:
   ├── Creates GitHub Release with all 3 files attached

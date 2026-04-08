@@ -1,8 +1,8 @@
 # TaskFlow Desktop
 
-**Lightweight Windows companion app for TaskFlow — time tracking, activity monitoring, and screenshots.**
+**Cross-platform desktop companion app for TaskFlow — time tracking, activity monitoring, and screenshots.**
 
-Built with Go (Wails v2) + Preact. Connects to the same backend as the web app.
+Built with Go (Wails v2) + Preact. Supports **Windows, Linux, and macOS**. Connects to the same backend as the web app.
 
 ---
 
@@ -23,24 +23,34 @@ Built with Go (Wails v2) + Preact. Connects to the same backend as the web app.
 ## Tech Stack
 
 ```
-Go 1.22          — Backend logic, Win32 APIs
-Wails v2         — Desktop framework (WebView2)
-Preact + Vite    — Frontend UI (~37KB JS)
-TailwindCSS      — Styling
-Win32 APIs       — Activity tracking, screenshots, system tray, DPAPI
-NSIS             — Windows installer
+Go 1.22              — Backend logic, platform APIs
+Wails v2             — Desktop framework (WebView2 / WebKit)
+Preact + Vite        — Frontend UI (~37KB JS)
+TailwindCSS          — Styling
+kbinani/screenshot   — Cross-platform screen capture (DXGI / X11 / CoreGraphics)
+fyne.io/systray      — Cross-platform system tray
+GitHub Actions       — CI/CD for all 3 platforms
 ```
+
+### Platform Support
+
+| Platform | Installer | Requirements |
+|----------|-----------|-------------|
+| **Windows 10/11** | NSIS installer (`.exe`) | None — WebView2 built-in |
+| **Linux** (all distros) | AppImage | `webkit2gtk` (pre-installed on most DEs) |
+| **macOS 13+** | DMG (`.dmg`) | Universal binary (Intel + Apple Silicon) |
 
 ---
 
 ## Security
 
-- Tokens encrypted with **Windows DPAPI** before storing in Credential Manager
+- Tokens encrypted with **DPAPI** (Windows) / **Keychain** (macOS) / **secret-service** (Linux)
 - All API calls use **HTTPS with TLS 1.3 minimum**
 - Config injected at **build time** via ldflags (not stored on disk)
 - Activity monitoring requires **user consent** (installer privacy notice)
 - **No keystrokes recorded** — only press counts
 - **No mouse coordinates** — only event counts
+- Screenshots use **GPU-safe DXGI** (not BitBlt) — no conflicts with video calls
 - Screenshots **skip locked screens** and show **5-second warning**
 - Input validation on all user inputs
 
@@ -52,8 +62,9 @@ NSIS             — Windows installer
 
 - Go 1.22+
 - Node.js 18+
+- GCC (MinGW on Windows, gcc on Linux, Xcode on macOS)
 - Wails CLI (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`)
-- NSIS (for installer only)
+- NSIS (Windows installer only)
 
 ### Development
 
@@ -62,18 +73,33 @@ NSIS             — Windows installer
 cp config.example.json config.json
 # Edit config.json with your Cognito/API values
 
+# Windows
+powershell -File dev.ps1
+
+# Linux/macOS
 wails dev
 ```
 
-### Production Build
+### Production Build (Local)
 
 ```powershell
-# Standalone exe only
-powershell -ExecutionPolicy Bypass -File build.ps1
+# Windows: exe only
+powershell -File build.ps1
 
-# Exe + NSIS installer
-powershell -ExecutionPolicy Bypass -File build-installer.ps1
+# Windows: exe + NSIS installer
+powershell -File build-installer.ps1
 ```
+
+### Production Build (CI/CD — All Platforms)
+
+```bash
+# Push a version tag — GitHub Actions builds Windows + Linux + macOS automatically
+git tag v1.1.0
+git push origin v1.1.0
+# Outputs: .exe installer, .AppImage, .dmg → GitHub Release + S3
+```
+
+See [CI-CD-SETUP.md](CI-CD-SETUP.md) for details.
 
 Output:
 ```
