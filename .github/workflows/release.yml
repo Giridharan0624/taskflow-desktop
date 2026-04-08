@@ -1,0 +1,281 @@
+name: Release Desktop App
+
+on:
+  push:
+    tags:
+      - 'v*' # Trigger on version tags: v1.0.0, v1.1.0, etc.
+
+permissions:
+  contents: write # Needed for creating GitHub Releases
+
+env:
+  APP_NAME: TaskFlowDesktop
+  CGO_ENABLED: 1
+
+jobs:
+  # ═══ Build Windows ═══
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Install NSIS
+        run: choco install nsis -y
+
+      - name: Get version from tag
+        id: version
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Build Windows binary
+        shell: powershell
+        run: |
+          $pkg = "taskflow-desktop/internal/config"
+          $version = "${{ steps.version.outputs.VERSION }}"
+          $ldflags = @(
+            "-X '${pkg}.apiURL=${{ secrets.API_URL }}'"
+            "-X '${pkg}.cognitoRegion=${{ secrets.COGNITO_REGION }}'"
+            "-X '${pkg}.cognitoPoolID=${{ secrets.COGNITO_POOL_ID }}'"
+            "-X '${pkg}.cognitoClientID=${{ secrets.COGNITO_CLIENT_ID }}'"
+            "-X '${pkg}.webDashboardURL=${{ secrets.WEB_DASHBOARD_URL }}'"
+            "-X 'taskflow-desktop/internal/updater.CurrentVersion=${version}'"
+          ) -join " "
+          wails build -ldflags "$ldflags"
+
+      - name: Build NSIS installer
+        shell: powershell
+        run: |
+          cd build\windows\installer
+          makensis project.nsi
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: |
+            build/bin/taskflow-desktop.exe
+            build/windows/installer/TaskFlowDesktop-Setup-*.exe
+
+  # ═══ Build Linux ═══
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc webkit2gtk-4.0-dev gtk-3-dev \
+            libayatana-appindicator3-dev libx11-dev libxtst-dev \
+            libxkbcommon-dev libxcb-xkb-dev
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Build Linux binary
+        run: |
+          PKG="taskflow-desktop/internal/config"
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          LDFLAGS="-X '${PKG}.apiURL=${{ secrets.API_URL }}' \
+            -X '${PKG}.cognitoRegion=${{ secrets.COGNITO_REGION }}' \
+            -X '${PKG}.cognitoPoolID=${{ secrets.COGNITO_POOL_ID }}' \
+            -X '${PKG}.cognitoClientID=${{ secrets.COGNITO_CLIENT_ID }}' \
+            -X '${PKG}.webDashboardURL=${{ secrets.WEB_DASHBOARD_URL }}' \
+            -X 'taskflow-desktop/internal/updater.CurrentVersion=${VERSION}'"
+          wails build -ldflags "$LDFLAGS"
+
+      - name: Create AppImage
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          mkdir -p TaskFlow.AppDir/usr/bin
+          cp build/bin/taskflow-desktop TaskFlow.AppDir/usr/bin/
+          cp build/appicon.png TaskFlow.AppDir/taskflow.png
+
+          cat > TaskFlow.AppDir/taskflow-desktop.desktop << 'EOF'
+          [Desktop Entry]
+          Name=TaskFlow Desktop
+          Exec=taskflow-desktop
+          Icon=taskflow
+          Type=Application
+          Categories=Office;ProjectManagement;
+          Comment=Time Tracker & Activity Monitor
+          EOF
+
+          cat > TaskFlow.AppDir/AppRun << 'SCRIPT'
+          #!/bin/bash
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          exec "${HERE}/usr/bin/taskflow-desktop" "$@"
+          SCRIPT
+          chmod +x TaskFlow.AppDir/AppRun
+
+          # Download appimagetool
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+          ARCH=x86_64 ./appimagetool-x86_64.AppImage TaskFlow.AppDir "TaskFlow-${VERSION}-x86_64.AppImage"
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: TaskFlow-*-x86_64.AppImage
+
+  # ═══ Build macOS ═══
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Build macOS binary (universal)
+        run: |
+          PKG="taskflow-desktop/internal/config"
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          LDFLAGS="-X '${PKG}.apiURL=${{ secrets.API_URL }}' \
+            -X '${PKG}.cognitoRegion=${{ secrets.COGNITO_REGION }}' \
+            -X '${PKG}.cognitoPoolID=${{ secrets.COGNITO_POOL_ID }}' \
+            -X '${PKG}.cognitoClientID=${{ secrets.COGNITO_CLIENT_ID }}' \
+            -X '${PKG}.webDashboardURL=${{ secrets.WEB_DASHBOARD_URL }}' \
+            -X 'taskflow-desktop/internal/updater.CurrentVersion=${VERSION}'"
+          wails build -platform darwin/universal -ldflags "$LDFLAGS"
+
+      - name: Create DMG
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          brew install create-dmg
+          create-dmg \
+            --volname "TaskFlow Desktop" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --app-drop-link 400 200 \
+            --icon "TaskFlow Desktop.app" 200 200 \
+            "TaskFlowDesktop-${VERSION}-universal.dmg" \
+            "build/bin/" || true
+          # create-dmg returns non-zero even on success sometimes
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: TaskFlowDesktop-*-universal.dmg
+
+  # ═══ Create Release + Upload to S3 ═══
+  release:
+    needs: [build-windows, build-linux, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: List artifacts
+        run: find artifacts/ -type f
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: "v${{ steps.version.outputs.VERSION }}"
+          body: |
+            ## TaskFlow Desktop v${{ steps.version.outputs.VERSION }}
+
+            ### Downloads
+            | Platform | File |
+            |----------|------|
+            | Windows | `TaskFlowDesktop-Setup-${{ steps.version.outputs.VERSION }}.exe` |
+            | Linux | `TaskFlow-${{ steps.version.outputs.VERSION }}-x86_64.AppImage` |
+            | macOS | `TaskFlowDesktop-${{ steps.version.outputs.VERSION }}-universal.dmg` |
+
+            ### What's New
+            See commit history for changes.
+          files: |
+            artifacts/windows-build/build/windows/installer/*.exe
+            artifacts/windows-build/build/bin/taskflow-desktop.exe
+            artifacts/linux-build/*.AppImage
+            artifacts/macos-build/*.dmg
+          draft: false
+          prerelease: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
+
+      - name: Upload to S3
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          S3_BUCKET="taskflow-uploads-prod"
+          S3_PREFIX="releases/v${VERSION}"
+
+          # Upload all platform builds
+          aws s3 cp artifacts/windows-build/build/windows/installer/ "s3://${S3_BUCKET}/${S3_PREFIX}/" --recursive --exclude "*" --include "*.exe"
+          aws s3 cp artifacts/linux-build/ "s3://${S3_BUCKET}/${S3_PREFIX}/" --recursive --exclude "*" --include "*.AppImage"
+          aws s3 cp artifacts/macos-build/ "s3://${S3_BUCKET}/${S3_PREFIX}/" --recursive --exclude "*" --include "*.dmg"
+
+          # Create latest.json for website download page
+          cat > /tmp/latest.json << EOF
+          {
+            "version": "${VERSION}",
+            "released_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "downloads": {
+              "windows": "https://d32wbqjdb87hcf.cloudfront.net/${S3_PREFIX}/TaskFlowDesktop-Setup-${VERSION}.exe",
+              "linux": "https://d32wbqjdb87hcf.cloudfront.net/${S3_PREFIX}/TaskFlow-${VERSION}-x86_64.AppImage",
+              "macos": "https://d32wbqjdb87hcf.cloudfront.net/${S3_PREFIX}/TaskFlowDesktop-${VERSION}-universal.dmg"
+            },
+            "github_release": "https://github.com/Giridharan0624/taskflow-desktop/releases/tag/v${VERSION}"
+          }
+          EOF
+
+          aws s3 cp /tmp/latest.json "s3://${S3_BUCKET}/releases/latest.json" --content-type "application/json"
+
+          echo "=== Uploaded to S3 ==="
+          echo "Windows: https://d32wbqjdb87hcf.cloudfront.net/${S3_PREFIX}/TaskFlowDesktop-Setup-${VERSION}.exe"
+          echo "Linux: https://d32wbqjdb87hcf.cloudfront.net/${S3_PREFIX}/TaskFlow-${VERSION}-x86_64.AppImage"
+          echo "macOS: https://d32wbqjdb87hcf.cloudfront.net/${S3_PREFIX}/TaskFlowDesktop-${VERSION}-universal.dmg"
+          echo "Latest: https://d32wbqjdb87hcf.cloudfront.net/releases/latest.json"
