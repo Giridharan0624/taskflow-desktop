@@ -55,6 +55,15 @@ func (a *App) startup(ctx context.Context) {
 		OnQuit: func() {
 			go func() {
 				log.Println("Quit requested from tray")
+				// Auto-stop timer before quitting so backend doesn't stay SIGNED_IN
+				if a.State.IsTimerActive() {
+					log.Println("Timer active — signing out before quit...")
+					if _, err := a.APIClient.SignOut(); err != nil {
+						log.Printf("Auto sign-out failed: %v", err)
+					} else {
+						log.Println("Timer stopped successfully")
+					}
+				}
 				a.quitting = true
 				a.ActivityMonitor.Stop()
 				a.TrayManager.Stop()
