@@ -19,10 +19,11 @@ import (
 
 // App is the main application struct. Methods bound to the frontend via Wails.
 type App struct {
-	ctx             context.Context // The EXACT Wails context — required for runtime calls
-	stopChan        chan struct{}   // Signal to stop background goroutines
-	quitting        bool           // True when user clicks Quit from tray
-	State           *state.AppState
+	ctx               context.Context // The EXACT Wails context — required for runtime calls
+	stopChan          chan struct{}   // Signal to stop background goroutines
+	quitting          bool           // True when user clicks Quit from tray
+	networkErrorCount int            // Consecutive network errors
+	State             *state.AppState
 	AuthService     *auth.Service
 	APIClient       *api.Client
 	ActivityMonitor *monitor.ActivityMonitor
@@ -161,8 +162,16 @@ func (a *App) fetchAttendance() {
 	}()
 	attendance, err := a.APIClient.GetMyAttendance()
 	if err != nil {
-		log.Printf("Failed to fetch attendance: %v", err)
+		a.networkErrorCount++
+		log.Printf("Failed to fetch attendance (attempt %d): %v", a.networkErrorCount, err)
+		if a.networkErrorCount >= 3 {
+			runtime.EventsEmit(a.ctx, "network:error", "Connection lost. Retrying...")
+		}
 		return
+	}
+	if a.networkErrorCount > 0 {
+		a.networkErrorCount = 0
+		runtime.EventsEmit(a.ctx, "network:restored", nil)
 	}
 
 	a.State.SetAttendance(attendance)

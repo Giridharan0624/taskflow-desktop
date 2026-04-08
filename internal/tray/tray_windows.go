@@ -329,6 +329,12 @@ func (m *Manager) SetTimerActive(active bool, task *state.CurrentTask) {
 
 // trayWndProc handles window messages for the tray icon.
 func trayWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Recovered panic in trayWndProc: %v", r)
+		}
+	}()
+
 	switch msg {
 	case WM_TRAY_CALLBACK:
 		// With NOTIFYICON_VERSION_4, the event is in the low word of lParam
@@ -535,6 +541,9 @@ func createDotOverlayIcon(baseIcon uintptr) uintptr {
 	}
 	newIcon, _, _ := pCreateIconIndirect.Call(uintptr(unsafe.Pointer(&ii)))
 
-	// Don't delete bitmaps — they're owned by the icon now
+	// Delete bitmaps after icon is created — CreateIconIndirect copies them
+	pDeleteObject.Call(hbmMask)
+	pDeleteObject.Call(hbmColor)
+
 	return newIcon
 }

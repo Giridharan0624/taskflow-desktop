@@ -1,4 +1,6 @@
-$env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+$env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User") + ";C:\mingw64\bin"
+$env:CGO_ENABLED = "1"
+$env:CC = "gcc"
 Set-Location "D:\NEUROSTACK\PROJECTS\task-management\desktop"
 
 Write-Host "=== Building TaskFlow Desktop Installer (COMPANY) ==="

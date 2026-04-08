@@ -53,7 +53,17 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
     window.runtime.EventsOn("attendance:updated", (d: Attendance | null) =>
       setAttendance(patchAttendance(d ?? null))
     );
-    return () => window.runtime.EventsOff("attendance:updated");
+    window.runtime.EventsOn("network:error", (msg: string) => {
+      setError(msg || "Connection lost. Retrying...");
+    });
+    window.runtime.EventsOn("network:restored", () => {
+      setError("");
+    });
+    return () => {
+      window.runtime.EventsOff("attendance:updated");
+      window.runtime.EventsOff("network:error");
+      window.runtime.EventsOff("network:restored");
+    };
   }, []);
 
   const sessions = useMemo(() => {

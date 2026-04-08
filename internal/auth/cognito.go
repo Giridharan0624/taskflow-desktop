@@ -19,6 +19,19 @@ import (
 	"taskflow-desktop/internal/state"
 )
 
+// authCtx returns a context with 15-second timeout for Cognito API calls.
+// The cancel function is intentionally not returned — the context will be
+// garbage collected after the API call completes or the timeout fires.
+func authCtx() context.Context {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// Schedule cancel after timeout to prevent resource leak
+	go func() {
+		<-ctx.Done()
+		cancel()
+	}()
+	return ctx
+}
+
 const (
 	// Keychain service name for storing tokens
 	KeyringService = "taskflow-desktop"
@@ -95,7 +108,7 @@ func (s *Service) Login(identifier, password string) (*LoginResult, error) {
 		},
 	}
 
-	result, err := s.client.InitiateAuth(context.Background(), input)
+	result, err := s.client.InitiateAuth(authCtx(), input)
 	if err != nil {
 		return nil, fmt.Errorf("authentication failed: %w", err)
 	}
@@ -148,7 +161,7 @@ func (s *Service) CompleteNewPasswordChallenge(session, newPassword string) erro
 		},
 	}
 
-	result, err := s.client.RespondToAuthChallenge(context.Background(), input)
+	result, err := s.client.RespondToAuthChallenge(authCtx(), input)
 	if err != nil {
 		return fmt.Errorf("failed to set new password: %w", err)
 	}
@@ -221,7 +234,7 @@ func (s *Service) refreshTokens() error {
 		},
 	}
 
-	result, err := s.client.InitiateAuth(context.Background(), input)
+	result, err := s.client.InitiateAuth(authCtx(), input)
 	if err != nil {
 		// Refresh token expired (>30 days) — user must re-login
 		s.Logout()

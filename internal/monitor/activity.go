@@ -43,8 +43,8 @@ type ActivityMonitor struct {
 	idleSeconds     int
 	appUsage map[string]int // app name → seconds in current bucket
 
-	running  bool
-	stopChan chan struct{}
+	running bool
+	cancel  context.CancelFunc // cancels all goroutines on Stop()
 }
 
 // NewActivityMonitor creates a new activity monitor.
@@ -57,7 +57,6 @@ func NewActivityMonitor(apiClient *api.Client, appState *state.AppState) *Activi
 		inputTracker:  NewInputTracker(),
 		screenshotCap: NewScreenshotCapture(),
 		appUsage:      make(map[string]int),
-		stopChan:      make(chan struct{}),
 	}
 }
 
@@ -67,14 +66,15 @@ func (m *ActivityMonitor) SetNotifyFunc(fn NotifyFunc) {
 }
 
 // Start begins activity monitoring. Safe to call multiple times — no-ops if already running.
-func (m *ActivityMonitor) Start(ctx context.Context) {
+func (m *ActivityMonitor) Start(parentCtx context.Context) {
 	m.mu.Lock()
 	if m.running {
 		m.mu.Unlock()
 		return
 	}
 	m.running = true
-	m.stopChan = make(chan struct{}) // Fresh channel for this run
+	var ctx context.Context
+	ctx, m.cancel = context.WithCancel(parentCtx)
 	m.mu.Unlock()
 
 	log.Println("Activity monitor started")
@@ -94,7 +94,9 @@ func (m *ActivityMonitor) Stop() {
 	}
 
 	m.running = false
-	close(m.stopChan)
+	if m.cancel != nil {
+		m.cancel()
+	}
 	m.resetBucketLocked()
 	log.Println("Activity monitor stopped")
 }
@@ -114,8 +116,6 @@ func (m *ActivityMonitor) trackActivity(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-m.stopChan:
-			return
 
 		case <-ticker.C:
 			// Check idle state via Win32 GetLastInputInfo
@@ -126,12 +126,26 @@ func (m *ActivityMonitor) trackActivity(ctx context.Context) {
 			kbCount, msCount := m.inputTracker.GetCounts()
 
 			m.mu.Lock()
-			// Calculate delta since last check
+			// Calculate delta since last check (handles uint32 wrap-around)
 			if lastKeyboard > 0 {
-				kbDelta := kbCount - lastKeyboard
-				msDelta := msCount - lastMouse
-				m.keyboardCount += int(kbDelta)
-				m.mouseCount += int(msDelta)
+				var kbDelta, msDelta uint32
+				if kbCount >= lastKeyboard {
+					kbDelta = kbCount - lastKeyboard
+				} else {
+					kbDelta = (0xFFFFFFFF - lastKeyboard) + kbCount // wrap-around
+				}
+				if msCount >= lastMouse {
+					msDelta = msCount - lastMouse
+				} else {
+					msDelta = (0xFFFFFFFF - lastMouse) + msCount
+				}
+				// Cap deltas to reasonable values (prevent spikes)
+				if kbDelta < 1000 {
+					m.keyboardCount += int(kbDelta)
+				}
+				if msDelta < 1000 {
+					m.mouseCount += int(msDelta)
+				}
 			}
 			lastKeyboard = kbCount
 			lastMouse = msCount
@@ -147,7 +161,9 @@ func (m *ActivityMonitor) trackActivity(ctx context.Context) {
 			appName := m.windowTracker.GetActiveWindowApp()
 			if appName != "" {
 				m.mu.Lock()
-				m.appUsage[appName] += 5
+				if len(m.appUsage) < maxAppsPerBucket || m.appUsage[appName] > 0 {
+					m.appUsage[appName] += 5
+				}
 				m.mu.Unlock()
 			}
 		}
@@ -162,8 +178,6 @@ func (m *ActivityMonitor) sendHeartbeats(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			return
-		case <-m.stopChan:
 			return
 
 		case <-ticker.C:
@@ -219,12 +233,21 @@ func (m *ActivityMonitor) resetBucket() {
 	m.mu.Unlock()
 }
 
+const maxAppsPerBucket = 30
+
 func (m *ActivityMonitor) resetBucketLocked() {
 	m.keyboardCount = 0
 	m.mouseCount = 0
 	m.activeSeconds = 0
 	m.idleSeconds = 0
-	m.appUsage = make(map[string]int)
+	// Cap app usage map to prevent unbounded growth
+	if len(m.appUsage) > maxAppsPerBucket {
+		m.appUsage = make(map[string]int)
+	} else {
+		for k := range m.appUsage {
+			delete(m.appUsage, k)
+		}
+	}
 }
 
 // captureScreenshots takes a screenshot every 10 minutes while the timer is active.
@@ -236,8 +259,6 @@ func (m *ActivityMonitor) captureScreenshots(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-m.stopChan:
-			return
 		case <-ticker.C:
 			if !m.appState.IsTimerActive() {
 				continue
@@ -248,7 +269,13 @@ func (m *ActivityMonitor) captureScreenshots(ctx context.Context) {
 }
 
 // takeAndUploadScreenshot captures the screen, uploads to S3, and stores the URL.
+// Has panic recovery to prevent screenshot failures from crashing the app.
 func (m *ActivityMonitor) takeAndUploadScreenshot() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Screenshot capture recovered from panic: %v", r)
+		}
+	}()
 	// 5-second warning via system tray balloon (reliable on all Windows versions)
 	if m.onNotify != nil {
 		m.onNotify("TaskFlow", "Screenshot in 5 seconds...")
@@ -269,6 +296,9 @@ func (m *ActivityMonitor) takeAndUploadScreenshot() {
 	cdnURL, err := m.apiClient.UploadScreenshot(jpegData, filename)
 	if err != nil {
 		log.Printf("Screenshot upload failed: %v", err)
+		if m.onNotify != nil {
+			m.onNotify("TaskFlow", "Screenshot upload failed — check your connection")
+		}
 		return
 	}
 
