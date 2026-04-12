@@ -220,6 +220,15 @@ jobs:
       - name: List artifacts
         run: find artifacts/ -type f
 
+      - name: Collect release files
+        run: |
+          mkdir -p release-files
+          find artifacts/ -name "*.exe" -exec cp {} release-files/ \;
+          find artifacts/ -name "*.AppImage" -exec cp {} release-files/ \;
+          find artifacts/ -name "*.dmg" -exec cp {} release-files/ \;
+          echo "=== Release files ==="
+          ls -la release-files/
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -236,11 +245,7 @@ jobs:
 
             ### What's New
             See commit history for changes.
-          files: |
-            artifacts/windows-build/build/windows/installer/*.exe
-            artifacts/windows-build/build/bin/taskflow-desktop.exe
-            artifacts/linux-build/*.AppImage
-            artifacts/macos-build/*.dmg
+          files: release-files/*
           draft: false
           prerelease: false
 
@@ -257,10 +262,8 @@ jobs:
           S3_BUCKET="taskflow-ns-uploads-prod"
           S3_PREFIX="releases/v${VERSION}"
 
-          # Upload all platform builds
-          aws s3 cp artifacts/windows-build/build/windows/installer/ "s3://${S3_BUCKET}/${S3_PREFIX}/" --recursive --exclude "*" --include "*.exe"
-          aws s3 cp artifacts/linux-build/ "s3://${S3_BUCKET}/${S3_PREFIX}/" --recursive --exclude "*" --include "*.AppImage"
-          aws s3 cp artifacts/macos-build/ "s3://${S3_BUCKET}/${S3_PREFIX}/" --recursive --exclude "*" --include "*.dmg"
+          # Upload all platform builds (files already collected in release-files/)
+          aws s3 cp release-files/ "s3://${S3_BUCKET}/${S3_PREFIX}/" --recursive
 
           # Create latest.json for website download page
           cat > /tmp/latest.json << EOF
