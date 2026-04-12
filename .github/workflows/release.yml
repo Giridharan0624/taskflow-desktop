@@ -11,6 +11,7 @@ permissions:
 env:
   APP_NAME: TaskFlowDesktop
   CGO_ENABLED: 1
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   # ═══ Build Windows ═══
