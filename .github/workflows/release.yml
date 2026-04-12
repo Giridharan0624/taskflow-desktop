@@ -250,7 +250,7 @@ jobs:
       - name: Upload to S3
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
-          S3_BUCKET="taskflow-uploads-prod"
+          S3_BUCKET="taskflow-ns-uploads-prod"
           S3_PREFIX="releases/v${VERSION}"
 
           # Upload all platform builds
@@ -264,9 +264,9 @@ jobs:
             "version": "${VERSION}",
             "released_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "downloads": {
-              "windows": "https://d32wbqjdb87hcf.cloudfront.net/${S3_PREFIX}/TaskFlowDesktop-Setup-${VERSION}.exe",
-              "linux": "https://d32wbqjdb87hcf.cloudfront.net/${S3_PREFIX}/TaskFlow-${VERSION}-x86_64.AppImage",
-              "macos": "https://d32wbqjdb87hcf.cloudfront.net/${S3_PREFIX}/TaskFlowDesktop-${VERSION}-universal.dmg"
+              "windows": "https://dp2uotzxlo5a5.cloudfront.net/${S3_PREFIX}/TaskFlowDesktop-Setup-${VERSION}.exe",
+              "linux": "https://dp2uotzxlo5a5.cloudfront.net/${S3_PREFIX}/TaskFlow-${VERSION}-x86_64.AppImage",
+              "macos": "https://dp2uotzxlo5a5.cloudfront.net/${S3_PREFIX}/TaskFlowDesktop-${VERSION}-universal.dmg"
             },
             "github_release": "https://github.com/Giridharan0624/taskflow-desktop/releases/tag/v${VERSION}"
           }
@@ -275,7 +275,7 @@ jobs:
           aws s3 cp /tmp/latest.json "s3://${S3_BUCKET}/releases/latest.json" --content-type "application/json"
 
           echo "=== Uploaded to S3 ==="
-          echo "Windows: https://d32wbqjdb87hcf.cloudfront.net/${S3_PREFIX}/TaskFlowDesktop-Setup-${VERSION}.exe"
-          echo "Linux: https://d32wbqjdb87hcf.cloudfront.net/${S3_PREFIX}/TaskFlow-${VERSION}-x86_64.AppImage"
-          echo "macOS: https://d32wbqjdb87hcf.cloudfront.net/${S3_PREFIX}/TaskFlowDesktop-${VERSION}-universal.dmg"
-          echo "Latest: https://d32wbqjdb87hcf.cloudfront.net/releases/latest.json"
+          echo "Windows: https://dp2uotzxlo5a5.cloudfront.net/${S3_PREFIX}/TaskFlowDesktop-Setup-${VERSION}.exe"
+          echo "Linux: https://dp2uotzxlo5a5.cloudfront.net/${S3_PREFIX}/TaskFlow-${VERSION}-x86_64.AppImage"
+          echo "macOS: https://dp2uotzxlo5a5.cloudfront.net/${S3_PREFIX}/TaskFlowDesktop-${VERSION}-universal.dmg"
+          echo "Latest: https://dp2uotzxlo5a5.cloudfront.net/releases/latest.json"
