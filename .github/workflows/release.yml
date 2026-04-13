@@ -289,8 +289,20 @@ jobs:
           }
           EOF
 
-          aws s3 cp /tmp/latest.json "s3://${S3_BUCKET}/releases/latest.json" --content-type "application/json"
+          aws s3 cp /tmp/latest.json "s3://${S3_BUCKET}/releases/latest.json" \
+            --content-type "application/json" \
+            --cache-control "no-cache, max-age=0, must-revalidate"
 
+      - name: Invalidate CloudFront cache for latest.json
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}" \
+            --paths "/releases/latest.json"
+
+      - name: Print release URLs
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          S3_PREFIX="releases/v${VERSION}"
           echo "=== Uploaded to S3 ==="
           echo "Windows: https://dp2uotzxlo5a5.cloudfront.net/${S3_PREFIX}/TaskFlowDesktop-Setup-${VERSION}.exe"
           echo "Linux: https://dp2uotzxlo5a5.cloudfront.net/${S3_PREFIX}/TaskFlow-${VERSION}-x86_64.AppImage"
