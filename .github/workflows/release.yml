@@ -61,8 +61,13 @@ jobs:
       - name: Build NSIS installer
         shell: powershell
         run: |
+          $version = "${{ steps.version.outputs.VERSION }}"
           cd build\windows\installer
-          makensis project.nsi
+          makensis /DPRODUCT_VERSION=$version project.nsi
+          if (-not (Test-Path "TaskFlowDesktop-Setup-$version.exe")) {
+            Write-Error "Installer not found: TaskFlowDesktop-Setup-$version.exe"
+            exit 1
+          }
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -194,7 +199,11 @@ jobs:
             --icon "TaskFlow Desktop.app" 200 200 \
             "TaskFlowDesktop-${VERSION}-universal.dmg" \
             "build/bin/" || true
-          # create-dmg returns non-zero even on success sometimes
+          # create-dmg returns non-zero even on success sometimes — verify the file exists instead
+          if [ ! -f "TaskFlowDesktop-${VERSION}-universal.dmg" ]; then
+            echo "ERROR: DMG was not produced"
+            exit 1
+          fi
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
