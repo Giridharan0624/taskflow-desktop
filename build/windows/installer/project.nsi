@@ -144,6 +144,14 @@ Section "Install"
         WriteRegStr HKCU "${PRODUCT_AUTORUN_KEY}" "${PRODUCT_NAME}" "$INSTDIR\${PRODUCT_EXE}"
     ${EndIf}
 
+    ; ── Auto-Relaunch after silent (auto-update) installs ──
+    ; Interactive installs already get the MUI_FINISHPAGE_RUN checkbox.
+    ; Launching via explorer.exe drops the elevated UAC token so the app runs
+    ; as the regular user instead of inheriting admin from the installer.
+    ${If} ${Silent}
+        Exec '"$WINDIR\explorer.exe" "$INSTDIR\${PRODUCT_EXE}"'
+    ${EndIf}
+
 SectionEnd
 
 ;; ─── WebView2 Check ───
