@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -142,28 +143,51 @@ func DownloadAndInstall(info *UpdateInfo) error {
 
 	log.Printf("Downloaded to %s, launching installer...", destPath)
 
-	// Launch the platform-specific installer and exit
+	// Launch the platform-specific installer. The caller is responsible for
+	// triggering a graceful app shutdown (runtime.Quit) so in-flight activity
+	// heartbeats and background services are stopped cleanly before the
+	// installer replaces the running binary.
 	if err := installUpdate(destPath); err != nil {
 		return fmt.Errorf("failed to install update: %w", err)
 	}
-
-	os.Exit(0)
 	return nil
 }
 
-// isNewer returns true if version a is newer than version b.
-// Simple comparison: "1.1.0" > "1.0.0"
+// isNewer reports whether version a is strictly newer than b.
+// Components are compared numerically so "1.10.0" > "1.9.0" — a lexicographic
+// compare would get that wrong because "10" < "9" as strings.
 func isNewer(a, b string) bool {
-	aParts := strings.Split(a, ".")
-	bParts := strings.Split(b, ".")
-
-	for i := 0; i < len(aParts) && i < len(bParts); i++ {
-		if aParts[i] > bParts[i] {
-			return true
+	aParts := parseVersion(a)
+	bParts := parseVersion(b)
+	for i := 0; i < len(aParts) || i < len(bParts); i++ {
+		av, bv := 0, 0
+		if i < len(aParts) {
+			av = aParts[i]
 		}
-		if aParts[i] < bParts[i] {
-			return false
+		if i < len(bParts) {
+			bv = bParts[i]
+		}
+		if av != bv {
+			return av > bv
 		}
 	}
-	return len(aParts) > len(bParts)
+	return false
+}
+
+// parseVersion splits "1.2.3" into [1, 2, 3]. Pre-release suffixes like
+// "-beta" or "+build" are stripped from each component. Returns whatever
+// was parsed before the first invalid component.
+func parseVersion(v string) []int {
+	out := make([]int, 0, 3)
+	for _, part := range strings.Split(v, ".") {
+		if i := strings.IndexAny(part, "-+"); i >= 0 {
+			part = part[:i]
+		}
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return out
+		}
+		out = append(out, n)
+	}
+	return out
 }

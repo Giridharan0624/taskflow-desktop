@@ -73,9 +73,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-build
-          path: |
-            build/bin/taskflow-desktop.exe
-            build/windows/installer/TaskFlowDesktop-Setup-*.exe
+          path: build/windows/installer/TaskFlowDesktop-Setup-*.exe
 
   # ═══ Build Linux ═══
   build-linux:

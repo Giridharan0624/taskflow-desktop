@@ -96,6 +96,12 @@ FunctionEnd
 
 ;; ─── Install Section ───
 Section "Install"
+    ; Kill any running instance so the exe file lock is released before we
+    ; overwrite it. Silent auto-updates hit this path; the short sleep gives
+    ; Windows a moment to release file handles after the kill.
+    nsExec::ExecToLog 'taskkill /F /IM ${PRODUCT_EXE}'
+    Sleep 500
+
     SetOutPath "$INSTDIR"
 
     ; Main application

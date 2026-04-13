@@ -334,12 +334,18 @@ func (a *App) CheckForUpdate() (*updater.UpdateInfo, error) {
 }
 
 // InstallUpdate downloads and installs the update. Called from frontend.
+// On success, triggers a graceful Wails shutdown so background services and
+// the activity monitor stop cleanly before the installer replaces the binary.
 func (a *App) InstallUpdate(downloadURL, fileName string) error {
-	return updater.DownloadAndInstall(&updater.UpdateInfo{
+	if err := updater.DownloadAndInstall(&updater.UpdateInfo{
 		Available:   true,
 		DownloadURL: downloadURL,
 		FileName:    fileName,
-	})
+	}); err != nil {
+		return err
+	}
+	runtime.Quit(a.ctx)
+	return nil
 }
 
 // GetAppVersion returns the current app version.
