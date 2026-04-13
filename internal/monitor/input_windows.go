@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	procGetKeyboardState = user32.NewProc("GetKeyboardState")
+	procGetAsyncKeyState = user32.NewProc("GetAsyncKeyState")
 	procGetCursorPos     = user32.NewProc("GetCursorPos")
 )
 
@@ -45,21 +45,25 @@ func NewInputTracker() *InputTracker {
 }
 
 // GetCounts returns current keyboard and mouse event totals.
-// Called every second from the activity tracker to compute deltas.
-// Uses GetKeyboardState (reads state without consuming events) instead of
-// GetAsyncKeyState (which clears the "pressed since last query" bit and
-// can eat key events before the WebView processes them).
+// Uses GetAsyncKeyState because this polls from a background goroutine with
+// no message pump — GetKeyboardState would return all zeros in that context.
 func (t *InputTracker) GetCounts() (keyboard uint32, mouse uint32) {
-	// Read entire keyboard state in one call — does NOT consume events
-	var keyStates [256]byte
-	procGetKeyboardState.Call(uintptr(unsafe.Pointer(&keyStates[0])))
+	// Mouse buttons: VK_LBUTTON=0x01, VK_RBUTTON=0x02, VK_MBUTTON=0x04, VK_XBUTTON1=0x05, VK_XBUTTON2=0x06.
+	for _, vk := range [...]int{0x01, 0x02, 0x04, 0x05, 0x06} {
+		ret, _, _ := procGetAsyncKeyState.Call(uintptr(vk))
+		isDown := (ret & 0x8000) != 0
+		if isDown && !t.lastKeyStates[vk] {
+			t.mouseTotal.Add(1)
+		}
+		t.lastKeyStates[vk] = isDown
+	}
 
+	// Keyboard keys 0x08..0xFE (skips the mouse button range above).
 	keysPressed := 0
-	for vk := 8; vk < 255; vk++ { // Skip mouse buttons (0x01-0x07)
-		isDown := (keyStates[vk] & 0x80) != 0
-		wasDown := t.lastKeyStates[vk]
-
-		if isDown && !wasDown {
+	for vk := 0x08; vk < 0xFF; vk++ {
+		ret, _, _ := procGetAsyncKeyState.Call(uintptr(vk))
+		isDown := (ret & 0x8000) != 0
+		if isDown && !t.lastKeyStates[vk] {
 			keysPressed++
 		}
 		t.lastKeyStates[vk] = isDown
@@ -68,7 +72,7 @@ func (t *InputTracker) GetCounts() (keyboard uint32, mouse uint32) {
 		t.keyboardTotal.Add(uint32(keysPressed))
 	}
 
-	// Check mouse: detect cursor movement
+	// Mouse movement via cursor position delta.
 	var pt POINT
 	ret, _, _ := procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
 	if ret != 0 {
@@ -77,14 +81,6 @@ func (t *InputTracker) GetCounts() (keyboard uint32, mouse uint32) {
 			t.lastCursorX = pt.X
 			t.lastCursorY = pt.Y
 		}
-	}
-
-	// Check mouse buttons from keyboard state (high bit = pressed)
-	if (keyStates[0x01] & 0x80) != 0 { // VK_LBUTTON
-		t.mouseTotal.Add(1)
-	}
-	if (keyStates[0x02] & 0x80) != 0 { // VK_RBUTTON
-		t.mouseTotal.Add(1)
 	}
 
 	return t.keyboardTotal.Load(), t.mouseTotal.Load()

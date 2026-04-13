@@ -186,13 +186,16 @@ func (m *ActivityMonitor) sendHeartbeats(ctx context.Context) {
 				m.resetBucket()
 				continue
 			}
-			m.sendCurrentBucket()
+			m.sendCurrentBucket("")
 		}
 	}
 }
 
 // sendCurrentBucket sends the current activity bucket to the backend and resets.
-func (m *ActivityMonitor) sendCurrentBucket() {
+// If screenshotURL is non-empty, it is attached to this bucket — screenshots
+// flush the current bucket early so their counts reflect real accumulated
+// activity rather than hardcoded zeros.
+func (m *ActivityMonitor) sendCurrentBucket(screenshotURL string) {
 	m.mu.Lock()
 
 	topApp := ""
@@ -213,12 +216,15 @@ func (m *ActivityMonitor) sendCurrentBucket() {
 		"top_app":        topApp,
 		"app_breakdown":  m.appUsage,
 	}
+	if screenshotURL != "" {
+		bucket["screenshot_url"] = screenshotURL
+	}
 
 	m.resetBucketLocked()
 	m.mu.Unlock()
 
-	log.Printf("Sending heartbeat: kb=%d mouse=%d active=%ds idle=%ds app=%s",
-		bucket["keyboard_count"], bucket["mouse_count"], bucket["active_seconds"], bucket["idle_seconds"], topApp)
+	log.Printf("Sending heartbeat: kb=%d mouse=%d active=%ds idle=%ds app=%s screenshot=%v",
+		bucket["keyboard_count"], bucket["mouse_count"], bucket["active_seconds"], bucket["idle_seconds"], topApp, screenshotURL != "")
 
 	if err := m.apiClient.SendActivityHeartbeat(bucket); err != nil {
 		log.Printf("Failed to send activity heartbeat: %v", err)
@@ -304,18 +310,7 @@ func (m *ActivityMonitor) takeAndUploadScreenshot() {
 
 	log.Printf("Screenshot uploaded: %s (%d KB)", cdnURL, len(jpegData)/1024)
 
-	// Send screenshot immediately in its own heartbeat — don't wait for next cycle
-	bucket := map[string]interface{}{
-		"timestamp":      time.Now().UTC().Format(time.RFC3339),
-		"keyboard_count": 0,
-		"mouse_count":    0,
-		"active_seconds": 0,
-		"idle_seconds":   0,
-		"screenshot_url": cdnURL,
-	}
-	if err := m.apiClient.SendActivityHeartbeat(bucket); err != nil {
-		log.Printf("Failed to send screenshot heartbeat: %v", err)
-	} else {
-		log.Println("Screenshot heartbeat sent immediately")
-	}
+	// Flush the current bucket early with the screenshot attached, so counts
+	// reflect real accumulated activity instead of being hardcoded to zero.
+	m.sendCurrentBucket(cdnURL)
 }
