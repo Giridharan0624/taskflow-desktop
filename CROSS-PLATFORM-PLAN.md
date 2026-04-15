@@ -181,15 +181,37 @@ Go 1.22+, Node.js 18+, Wails CLI, NSIS, GCC (MinGW)
 ```
 
 ### Linux (new)
-```bash
-# Ubuntu/Debian
-sudo apt install gcc webkit2gtk-4.0-dev gtk3-dev \
-  libayatana-appindicator3-dev libx11-dev libxtst-dev \
-  libxkbcommon-dev xcb libxcb-xkb-dev
 
-# Fedora
-sudo dnf install gcc webkit2gtk4.0-devel gtk3-devel \
+The webkit2gtk package was split across Ubuntu versions:
+- Ubuntu **22.04** and earlier ship **`libwebkit2gtk-4.0-dev`**
+- Ubuntu **24.04** (Noble) and later only ship **`libwebkit2gtk-4.1-dev`**
+
+Wails v2.9+ auto-detects which is installed, so install whichever your
+distro provides and `wails build` / `wails dev` will pick the right one
+at compile time. CI still runs on ubuntu-22.04 and uses 4.0 — that's
+fine; the built AppImage works on both.
+
+```bash
+# Ubuntu 24.04 (Noble) and later
+sudo apt update
+sudo apt install -y gcc pkg-config libgtk-3-dev \
+  libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+  libx11-dev libxtst-dev libxkbcommon-dev libxcb-xkb-dev
+
+# Ubuntu 22.04 / Debian 12
+sudo apt install -y gcc pkg-config libgtk-3-dev \
+  libwebkit2gtk-4.0-dev libayatana-appindicator3-dev \
+  libx11-dev libxtst-dev libxkbcommon-dev libxcb-xkb-dev
+
+# Fedora 39+
+sudo dnf install -y gcc pkg-config gtk3-devel webkit2gtk4.1-devel \
   libappindicator-gtk3-devel libX11-devel libXtst-devel
+```
+
+If Wails picks the wrong backend (rare on v2.12+), force 4.1 explicitly:
+```bash
+wails build -tags webkit2_41
+wails dev   -tags webkit2_41
 ```
 
 ### macOS (new)
