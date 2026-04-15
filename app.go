@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -103,9 +104,20 @@ func (a *App) startup(ctx context.Context) {
 	// tray must persist across logout/re-login.
 	go a.TrayManager.Start(a.trayStop)
 
-	// Check for updates silently on startup
+	// Check for updates silently on startup. Deliberately cancellable —
+	// a quick quit during the 5 s warm-up window (H-CORE-7) must not wake
+	// up later and EventsEmit into a torn-down Wails context.
 	go func() {
-		time.Sleep(5 * time.Second) // Wait for app to fully load
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("Startup update-check recovered from panic: %v", r)
+			}
+		}()
+		select {
+		case <-time.After(5 * time.Second):
+		case <-a.ctx.Done():
+			return
+		}
 		info, err := updater.CheckForUpdate()
 		if err != nil {
 			log.Printf("Update check failed: %v", err)
@@ -113,6 +125,11 @@ func (a *App) startup(ctx context.Context) {
 		}
 		if info.Available {
 			log.Printf("Update available: v%s (current: v%s)", info.Version, info.CurrentVer)
+			// Re-check cancellation just before crossing the IPC boundary;
+			// a.ctx may have been torn down between the sleep and now.
+			if a.ctx.Err() != nil {
+				return
+			}
 			runtime.EventsEmit(a.ctx, "update:available", info)
 		}
 	}()
@@ -224,6 +241,19 @@ func (a *App) fetchAttendance() {
 	}()
 	attendance, err := a.APIClient.GetMyAttendance()
 	if err != nil {
+		// Distinguish "token revoked / expired" from "network down". Without
+		// this the UI previously got stuck on "Connection lost. Retrying…"
+		// forever after a Cognito refresh-token revocation.
+		if errors.Is(err, api.ErrUnauthorized) {
+			log.Printf("Attendance poll got 401 — forcing re-auth")
+			a.stopBackgroundServices()
+			a.ActivityMonitor.Stop()
+			a.AuthService.Logout()
+			a.State.SetAuthenticated(false)
+			a.State.SetAttendance(nil)
+			runtime.EventsEmit(a.ctx, "auth:expired", nil)
+			return
+		}
 		count := a.networkErrorCount.Add(1)
 		log.Printf("Failed to fetch attendance (attempt %d): %v", count, err)
 		if count >= 3 {
