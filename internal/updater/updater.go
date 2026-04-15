@@ -323,20 +323,34 @@ func fetchExpectedChecksum(rawURL, fileName string) (string, error) {
 		return "", err
 	}
 
-	for _, line := range strings.Split(string(body), "\n") {
+	return parseSHA256SUMS(string(body), fileName)
+}
+
+// parseSHA256SUMS walks sha256sum-style output looking for an entry that
+// matches fileName. Split from fetchExpectedChecksum so it can be tested
+// without standing up an HTTPS server.
+//
+// Accepted line formats (sha256sum compatible):
+//
+//	<64-hex>  <filename>       (text mode)
+//	<64-hex> *<filename>       (binary mode — leading '*' is stripped)
+//	<64-hex>  ./subdir/<name>  (leading path — compared via filepath.Base)
+//
+// Blank lines and lines starting with '#' are ignored.
+func parseSHA256SUMS(body, fileName string) (string, error) {
+	for _, line := range strings.Split(body, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		// `sha256sum` format: "<64 hex chars><space><space-or-*><filename>"
-		// We are lenient about the separator (any whitespace).
+		// Lenient about whitespace between hash and filename.
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
 		}
 		hash := fields[0]
-		// The filename in SHA256SUMS may be preceded by `*` (binary mode)
-		// and may include a leading path; compare against basename only.
+		// The filename may be preceded by `*` (binary mode) and may
+		// include a leading path — compare against basename only.
 		name := strings.TrimPrefix(fields[len(fields)-1], "*")
 		if filepath.Base(name) == fileName {
 			if len(hash) != 64 {
