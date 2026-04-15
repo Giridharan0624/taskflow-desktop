@@ -121,7 +121,7 @@ func (c *Client) GetMyAttendance() (*Attendance, error) {
 	}
 
 	if resp.StatusCode() != 200 {
-		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode(), resp.String())
+		return nil, apiError("fetch attendance", resp)
 	}
 
 	// Backend returns 200 with body "null" when no attendance exists
@@ -171,7 +171,7 @@ func (c *Client) SignIn(data StartTimerData) (*Attendance, error) {
 	}
 
 	if resp.StatusCode() != 201 {
-		return nil, fmt.Errorf("sign-in failed (%d): %s", resp.StatusCode(), resp.String())
+		return nil, apiError("sign-in", resp)
 	}
 
 	// Convert snake_case response to camelCase and parse
@@ -197,7 +197,7 @@ func (c *Client) SignOut() (*Attendance, error) {
 	}
 
 	if resp.StatusCode() != 200 {
-		return nil, fmt.Errorf("sign-out failed %d: %s", resp.StatusCode(), resp.String())
+		return nil, apiError("sign-out", resp)
 	}
 
 	converted := snakeToCamel(resp.Body())
@@ -222,7 +222,7 @@ func (c *Client) GetMyTasks() ([]Task, error) {
 	}
 
 	if resp.StatusCode() != 200 {
-		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode(), resp.String())
+		return nil, apiError("fetch tasks", resp)
 	}
 
 	converted := snakeToCamel(resp.Body())
@@ -247,7 +247,7 @@ func (c *Client) GetCurrentUser() (*User, error) {
 	}
 
 	if resp.StatusCode() != 200 {
-		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode(), resp.String())
+		return nil, apiError("fetch user", resp)
 	}
 
 	converted := snakeToCamel(resp.Body())
@@ -272,7 +272,7 @@ func (c *Client) SendActivityHeartbeat(data map[string]interface{}) error {
 	}
 
 	if resp.StatusCode() != 201 {
-		return fmt.Errorf("heartbeat failed %d: %s", resp.StatusCode(), resp.String())
+		return apiError("heartbeat", resp)
 	}
 
 	return nil
@@ -293,7 +293,7 @@ func (c *Client) UploadScreenshot(jpegData []byte, filename string) (string, err
 		return "", fmt.Errorf("presign network error: %w", err)
 	}
 	if resp.StatusCode() != 200 {
-		return "", fmt.Errorf("presign failed %d: %s", resp.StatusCode(), resp.String())
+		return "", apiError("upload presign", resp)
 	}
 
 	converted := snakeToCamel(resp.Body())
