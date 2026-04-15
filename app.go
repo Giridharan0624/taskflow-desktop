@@ -248,7 +248,11 @@ func (a *App) fetchAttendance() {
 			log.Printf("Attendance poll got 401 — forcing re-auth")
 			a.stopBackgroundServices()
 			a.ActivityMonitor.Stop()
-			a.AuthService.Logout()
+			if logoutErr := a.AuthService.Logout(); logoutErr != nil {
+				// Keyring delete failed — log but proceed with the
+				// re-auth flow; the UI must not get wedged on this.
+				log.Printf("Logout during auth:expired returned: %v", logoutErr)
+			}
 			a.State.SetAuthenticated(false)
 			a.State.SetAttendance(nil)
 			runtime.EventsEmit(a.ctx, "auth:expired", nil)
@@ -331,13 +335,21 @@ func (a *App) SetNewPassword(newPassword string) error {
 }
 
 // Logout clears tokens and stops background services.
+// Keyring delete errors from AuthService.Logout are logged and surfaced
+// to the caller so a genuinely broken keystore doesn't silently pretend
+// everything is fine (H-AUTH-3). UI state is still torn down regardless
+// so the user can always get back to the login screen.
 func (a *App) Logout() error {
 	a.stopBackgroundServices()
 	a.ActivityMonitor.Stop()
-	a.AuthService.Logout()
+	authErr := a.AuthService.Logout()
 	a.State.SetAuthenticated(false)
 	a.State.SetAttendance(nil)
 	// NOTE: a.ctx is never replaced — it's the Wails context for the app's lifetime
+	if authErr != nil {
+		log.Printf("Logout: keystore delete returned: %v", authErr)
+		return fmt.Errorf("signed out, but stored credentials may remain: %w", authErr)
+	}
 	return nil
 }
 

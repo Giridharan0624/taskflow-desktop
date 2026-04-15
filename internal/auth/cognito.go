@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -59,11 +62,21 @@ type Tokens struct {
 }
 
 // Service handles authentication with AWS Cognito.
+//
+// All fields below mu are guarded by mu. A single coarse mutex is
+// deliberate: the auth service is low-frequency (one login, occasional
+// refresh, one logout) and the Cognito InitiateAuth call dominates
+// latency anyway. Holding the mutex across a 15-second Cognito call is
+// fine because every auth operation is naturally serialized per user.
+//
+// See H-AUTH-4, H-AUTH-5 in docs/BUG-REPORT-GO.md.
 type Service struct {
 	client   *cognito.Client
-	tokens   *Tokens
 	state    *state.AppState
 	clientID string // Cognito app client ID from config
+
+	mu     sync.Mutex
+	tokens *Tokens
 
 	// Challenge state for NEW_PASSWORD_REQUIRED. Never serialized over IPC —
 	// kept entirely on the Go side so the JS renderer cannot read the
@@ -92,10 +105,16 @@ func NewService(appState *state.AppState) *Service {
 // Login authenticates with Cognito using USER_PASSWORD_AUTH flow.
 // Supports both email and Employee ID (e.g., NS-26FA95) — Employee IDs
 // are resolved to email first via the /resolve-employee endpoint.
+//
+// Holds s.mu from the moment we look up the challenge state until the
+// new tokens are committed. This prevents a concurrent GetIDToken from
+// observing a half-committed state.
 func (s *Service) Login(identifier, password string) (*LoginResult, error) {
 	email := identifier
 
-	// If it looks like an Employee ID (not an email), resolve it
+	// If it looks like an Employee ID (not an email), resolve it. The
+	// resolve call is a plain HTTP GET against an unauthenticated
+	// endpoint — no state access — so it's safe to do outside the lock.
 	if !strings.Contains(identifier, "@") && isEmployeeID(identifier) {
 		resolved, err := s.resolveEmployeeID(identifier)
 		if err != nil {
@@ -103,6 +122,9 @@ func (s *Service) Login(identifier, password string) (*LoginResult, error) {
 		}
 		email = resolved
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	// Store email for NEW_PASSWORD_REQUIRED challenge
 	s.lastLoginEmail = email
@@ -168,6 +190,9 @@ func (s *Service) Login(identifier, password string) (*LoginResult, error) {
 // The Cognito challenge session is read from internal state (set during Login),
 // never passed across the IPC boundary.
 func (s *Service) CompleteNewPasswordChallenge(newPassword string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if s.lastLoginSession == "" {
 		return fmt.Errorf("no pending password challenge; please log in again")
 	}
@@ -178,7 +203,7 @@ func (s *Service) CompleteNewPasswordChallenge(newPassword string) error {
 		Session:       aws.String(s.lastLoginSession),
 		ChallengeResponses: map[string]string{
 			"NEW_PASSWORD": newPassword,
-			"USERNAME":     s.getStoredUsername(),
+			"USERNAME":     s.getStoredUsernameLocked(),
 		},
 	}
 
@@ -205,33 +230,61 @@ func (s *Service) CompleteNewPasswordChallenge(newPassword string) error {
 }
 
 // TryRestoreSession attempts to restore a session from stored tokens.
+// If the stored ID token is still valid, it is committed immediately.
+// If it has expired, we refresh OUT OF BAND — s.tokens stays nil until
+// the refresh call succeeds, so a concurrent GetIDToken cannot observe
+// stale tokens mid-refresh (H-AUTH-4).
 func (s *Service) TryRestoreSession() error {
 	tokens, err := s.loadTokensFromKeyring()
 	if err != nil {
 		return err
 	}
 
-	s.tokens = tokens
-
-	// Check if the ID token is expired or about to expire
-	if time.Now().Unix() > s.tokens.ExpiresAt-300 { // 5 min buffer
-		// Try refreshing with the refresh token
-		return s.refreshTokens()
+	// Still valid — commit immediately.
+	if time.Now().Unix() <= tokens.ExpiresAt-300 {
+		s.mu.Lock()
+		s.tokens = tokens
+		s.mu.Unlock()
+		return nil
 	}
 
-	return nil
+	// Expired — refresh using the stored refresh token WITHOUT committing
+	// the stale set to s.tokens first. Only on success do we expose the
+	// new tokens to the rest of the app.
+	refreshed, err := s.doRefreshCall(tokens.RefreshToken)
+	if err != nil {
+		return fmt.Errorf("stored session expired: %w", err)
+	}
+	// Cognito's refresh response does not include a new RefreshToken, so
+	// reuse the one we loaded from keyring.
+	refreshed.RefreshToken = tokens.RefreshToken
+
+	s.mu.Lock()
+	s.tokens = refreshed
+	s.mu.Unlock()
+
+	return s.saveTokensToKeyring()
 }
 
-// GetIDToken returns a valid ID token, refreshing if needed.
+// GetIDToken returns a valid ID token, refreshing if needed. Takes the
+// mutex exclusively so a mid-refresh mutation of s.tokens is atomic with
+// respect to this read.
 func (s *Service) GetIDToken() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if s.tokens == nil {
 		return "", fmt.Errorf("not authenticated")
 	}
 
-	// Refresh if token expires within 5 minutes
+	// Refresh if token expires within 5 minutes. refreshTokensLocked
+	// assumes s.mu is already held.
 	if time.Now().Unix() > s.tokens.ExpiresAt-300 {
-		if err := s.refreshTokens(); err != nil {
+		if err := s.refreshTokensLocked(); err != nil {
 			return "", fmt.Errorf("token refresh failed: %w", err)
+		}
+		if s.tokens == nil {
+			return "", fmt.Errorf("token gone after refresh")
 		}
 	}
 
@@ -239,42 +292,74 @@ func (s *Service) GetIDToken() (string, error) {
 }
 
 // Logout clears all stored tokens and any pending challenge state.
-func (s *Service) Logout() {
+// Returns the first error encountered while deleting tokens from the OS
+// keyring so callers can surface a genuinely broken logout instead of
+// silently pretending it succeeded (H-AUTH-3).
+func (s *Service) Logout() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.tokens = nil
 	s.lastLoginSession = ""
-	s.deleteTokensFromKeyring()
+	if err := s.deleteTokensFromKeyring(); err != nil {
+		return fmt.Errorf("delete stored tokens: %w", err)
+	}
+	return nil
 }
 
-// refreshTokens uses the refresh token to get new ID and Access tokens.
-func (s *Service) refreshTokens() error {
-	if s.tokens == nil || s.tokens.RefreshToken == "" {
-		return fmt.Errorf("no refresh token available")
+// doRefreshCall is the stateless Cognito refresh API call — it takes a
+// refresh token and returns the new (Id/Access) tokens without touching
+// s.tokens. Used by TryRestoreSession (to verify before committing) and
+// by refreshTokensLocked (for in-session refresh).
+func (s *Service) doRefreshCall(refreshToken string) (*Tokens, error) {
+	if refreshToken == "" {
+		return nil, errors.New("no refresh token available")
 	}
-
 	input := &cognito.InitiateAuthInput{
 		AuthFlow: types.AuthFlowTypeRefreshTokenAuth,
 		ClientId: aws.String(s.clientID),
 		AuthParameters: map[string]string{
-			"REFRESH_TOKEN": s.tokens.RefreshToken,
+			"REFRESH_TOKEN": refreshToken,
 		},
 	}
-
 	result, err := s.client.InitiateAuth(authCtx(), input)
 	if err != nil {
-		// Refresh token expired (>30 days) — user must re-login
-		s.Logout()
+		return nil, fmt.Errorf("cognito refresh: %w", err)
+	}
+	if result.AuthenticationResult == nil {
+		return nil, fmt.Errorf("empty authentication result from refresh")
+	}
+	return &Tokens{
+		IDToken:     *result.AuthenticationResult.IdToken,
+		AccessToken: *result.AuthenticationResult.AccessToken,
+		ExpiresAt:   time.Now().Add(time.Duration(result.AuthenticationResult.ExpiresIn) * time.Second).Unix(),
+		// RefreshToken intentionally empty — callers fill it in.
+	}, nil
+}
+
+// refreshTokensLocked refreshes the in-session tokens. Caller MUST hold
+// s.mu. On failure, clears s.tokens inline rather than calling Logout
+// (which would try to re-acquire the mutex and deadlock).
+func (s *Service) refreshTokensLocked() error {
+	if s.tokens == nil || s.tokens.RefreshToken == "" {
+		return fmt.Errorf("no refresh token available")
+	}
+
+	newTokens, err := s.doRefreshCall(s.tokens.RefreshToken)
+	if err != nil {
+		// Refresh token expired (>30 days) — user must re-login.
+		// Clear inline; cannot call s.Logout() because we hold s.mu.
+		s.tokens = nil
+		s.lastLoginSession = ""
+		if delErr := s.deleteTokensFromKeyring(); delErr != nil {
+			log.Printf("keystore cleanup after refresh failure returned: %v", delErr)
+		}
 		return fmt.Errorf("refresh token expired, please login again: %w", err)
 	}
 
-	if result.AuthenticationResult == nil {
-		return fmt.Errorf("unexpected empty result from token refresh")
-	}
-
-	s.tokens.IDToken = *result.AuthenticationResult.IdToken
-	s.tokens.AccessToken = *result.AuthenticationResult.AccessToken
-	s.tokens.ExpiresAt = time.Now().Add(time.Duration(result.AuthenticationResult.ExpiresIn) * time.Second).Unix()
-
-	// Refresh token is NOT returned on refresh — keep the existing one
+	// Keep the existing refresh token — Cognito doesn't return one on refresh.
+	s.tokens.IDToken = newTokens.IDToken
+	s.tokens.AccessToken = newTokens.AccessToken
+	s.tokens.ExpiresAt = newTokens.ExpiresAt
 
 	return s.saveTokensToKeyring()
 }
@@ -316,8 +401,9 @@ func (s *Service) decodeIDToken(idToken string) map[string]string {
 	return claims
 }
 
-// getStoredUsername returns the email for challenge responses.
-func (s *Service) getStoredUsername() string {
+// getStoredUsernameLocked returns the email for challenge responses.
+// Caller must hold s.mu.
+func (s *Service) getStoredUsernameLocked() string {
 	if s.lastLoginEmail != "" {
 		return s.lastLoginEmail
 	}

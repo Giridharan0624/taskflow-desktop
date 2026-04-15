@@ -5,6 +5,7 @@ package auth
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/zalando/go-keyring"
@@ -62,8 +63,11 @@ func (s *Service) loadTokensFromKeyring() (*Tokens, error) {
 		if err != nil {
 			// No plaintext fallback: a same-user process could forge a
 			// plaintext keyring entry and trivially bypass DPAPI. Wipe the
-			// stored tokens and force re-authentication.
-			s.deleteTokensFromKeyring()
+			// stored tokens and force re-authentication. The delete error
+			// is secondary to the real failure — log, don't shadow.
+			if delErr := s.deleteTokensFromKeyring(); delErr != nil {
+				log.Printf("keystore cleanup after DPAPI failure returned: %v", delErr)
+			}
 			return nil, fmt.Errorf("stored %s is corrupt or tampered, please log in again: %w", key, err)
 		}
 		decrypted[key] = plain
@@ -88,11 +92,21 @@ func (s *Service) loadTokensFromKeyring() (*Tokens, error) {
 }
 
 // deleteTokensFromKeyring removes all tokens from the OS keychain.
-func (s *Service) deleteTokensFromKeyring() {
-	deleteChunked(keyIdToken)
-	deleteChunked(keyAccessToken)
-	deleteChunked(keyRefreshToken)
-	_ = keyring.Delete(KeyringService, keyMeta)
+// Returns the first error encountered across the three chunked token
+// deletes and the meta delete, so a caller can surface a genuinely
+// broken logout instead of silently pretending it succeeded (H-AUTH-3).
+func (s *Service) deleteTokensFromKeyring() error {
+	var firstErr error
+	record := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	record(deleteChunked(keyIdToken))
+	record(deleteChunked(keyAccessToken))
+	record(deleteChunked(keyRefreshToken))
+	record(keyring.Delete(KeyringService, keyMeta))
+	return firstErr
 }
 
 // saveChunked splits a value into chunks and stores each one.
@@ -150,10 +164,12 @@ func loadChunked(key string) (string, error) {
 	return builder.String(), nil
 }
 
-// deleteChunked removes a key and all its chunks.
-func deleteChunked(key string) {
+// deleteChunked removes a key and all its chunks. Returns the error from
+// the primary key delete (the one that matters for logout correctness);
+// stale chunk deletes are best-effort since they may or may not exist.
+func deleteChunked(key string) error {
 	value, _ := keyring.Get(KeyringService, key)
-	_ = keyring.Delete(KeyringService, key)
+	primaryErr := keyring.Delete(KeyringService, key)
 
 	if strings.HasPrefix(value, "CHUNKED:") {
 		var count int
@@ -162,10 +178,12 @@ func deleteChunked(key string) {
 			_ = keyring.Delete(KeyringService, fmt.Sprintf("%s_%d", key, i))
 		}
 	}
-	// Also clean up any stale chunk keys
+	// Also clean up any stale chunk keys — best-effort cleanup,
+	// errors here don't affect logout correctness.
 	for i := 0; i < 10; i++ {
 		_ = keyring.Delete(KeyringService, fmt.Sprintf("%s_%d", key, i))
 	}
+	return primaryErr
 }
 
 func splitString(s string, size int) []string {

@@ -73,9 +73,15 @@ func (s *Service) loadTokensFromKeyring() (*Tokens, error) {
 	}, nil
 }
 
-// deleteTokensFromKeyring removes all stored tokens from the macOS Keychain.
-func (s *Service) deleteTokensFromKeyring() {
+// deleteTokensFromKeyring removes all stored tokens from the macOS
+// Keychain. Returns the first error encountered; callers log or surface
+// it rather than pretending logout always succeeded (H-AUTH-3).
+func (s *Service) deleteTokensFromKeyring() error {
+	var firstErr error
 	for _, key := range []string{"id_token", "access_token", "refresh_token", "meta"} {
-		keyring.Delete(KeyringService, key)
+		if err := keyring.Delete(KeyringService, key); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
+	return firstErr
 }
