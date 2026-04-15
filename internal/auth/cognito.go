@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -22,18 +24,11 @@ import (
 	"taskflow-desktop/internal/state"
 )
 
-// authCtx returns a context with 15-second timeout for Cognito API calls.
-// The cancel function is intentionally not returned — the context will be
-// garbage collected after the API call completes or the timeout fires.
-func authCtx() context.Context {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	// Schedule cancel after timeout to prevent resource leak
-	go func() {
-		<-ctx.Done()
-		cancel()
-	}()
-	return ctx
-}
+// cognitoCallTimeout bounds each AWS Cognito API call. Callers create a
+// fresh context via context.WithTimeout(context.Background(),
+// cognitoCallTimeout) and MUST `defer cancel()` immediately — a stale
+// cancel function is a goroutine leak (see C-AUTH-3).
+const cognitoCallTimeout = 15 * time.Second
 
 const (
 	// Keychain service name for storing tokens
@@ -138,7 +133,9 @@ func (s *Service) Login(identifier, password string) (*LoginResult, error) {
 		},
 	}
 
-	result, err := s.client.InitiateAuth(authCtx(), input)
+	ctx, cancel := context.WithTimeout(context.Background(), cognitoCallTimeout)
+	defer cancel()
+	result, err := s.client.InitiateAuth(ctx, input)
 	if err != nil {
 		return nil, fmt.Errorf("authentication failed: %w", err)
 	}
@@ -207,7 +204,9 @@ func (s *Service) CompleteNewPasswordChallenge(newPassword string) error {
 		},
 	}
 
-	result, err := s.client.RespondToAuthChallenge(authCtx(), input)
+	ctx, cancel := context.WithTimeout(context.Background(), cognitoCallTimeout)
+	defer cancel()
+	result, err := s.client.RespondToAuthChallenge(ctx, input)
 	if err != nil {
 		return fmt.Errorf("failed to set new password: %w", err)
 	}
@@ -321,7 +320,9 @@ func (s *Service) doRefreshCall(refreshToken string) (*Tokens, error) {
 			"REFRESH_TOKEN": refreshToken,
 		},
 	}
-	result, err := s.client.InitiateAuth(authCtx(), input)
+	ctx, cancel := context.WithTimeout(context.Background(), cognitoCallTimeout)
+	defer cancel()
+	result, err := s.client.InitiateAuth(ctx, input)
 	if err != nil {
 		return nil, fmt.Errorf("cognito refresh: %w", err)
 	}
@@ -424,12 +425,53 @@ func isEmployeeID(s string) bool {
 	return employeeIDRegex.MatchString(s)
 }
 
-// resolveEmployeeID calls GET /resolve-employee?employeeId=... to get the email.
-// This endpoint does not require authentication.
+// unauthClient is a hardened HTTP client used for pre-auth calls such as
+// resolveEmployeeID. It enforces TLS 1.3, a 10-second timeout, and
+// rejects any redirect that drops off HTTPS. See H-AUTH-6.
+var unauthClient = &http.Client{
+	Timeout: 10 * time.Second,
+	Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS13,
+		},
+	},
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if req.URL.Scheme != "https" {
+			return fmt.Errorf("refusing non-https redirect to %q", req.URL.String())
+		}
+		if len(via) >= 5 {
+			return fmt.Errorf("too many redirects")
+		}
+		return nil
+	},
+}
+
+// resolveEmployeeID calls GET /resolve-employee?employeeId=... to get
+// the email. This endpoint does not require authentication but we still
+// hit it through the hardened unauthClient above:
+//   - TLS 1.3 minimum (matches the main APIClient posture)
+//   - Context-scoped timeout instead of the global http.DefaultClient
+//     (which has no timeout at all)
+//   - employeeID url.QueryEscape'd before interpolation so a crafted
+//     input cannot inject a second query parameter
+//
+// See H-AUTH-6 and M-AUTH-1.
 func (s *Service) resolveEmployeeID(employeeID string) (string, error) {
 	cfg := config.Get()
-	url := fmt.Sprintf("%s/resolve-employee?employeeId=%s", cfg.APIURL, employeeID)
-	resp, err := http.Get(url)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	reqURL := fmt.Sprintf(
+		"%s/resolve-employee?employeeId=%s",
+		strings.TrimRight(cfg.APIURL, "/"),
+		url.QueryEscape(employeeID),
+	)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("build resolve request: %w", err)
+	}
+
+	resp, err := unauthClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("network error: %w", err)
 	}
@@ -439,7 +481,7 @@ func (s *Service) resolveEmployeeID(employeeID string) (string, error) {
 		return "", fmt.Errorf("employee ID not found (status %d)", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %w", err)
 	}

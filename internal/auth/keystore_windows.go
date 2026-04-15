@@ -179,8 +179,10 @@ func deleteChunked(key string) error {
 		}
 	}
 	// Also clean up any stale chunk keys — best-effort cleanup,
-	// errors here don't affect logout correctness.
-	for i := 0; i < 10; i++ {
+	// errors here don't affect logout correctness. Must match loadChunked's
+	// upper bound of 20 (see H-AUTH-2) or old chunks 10..19 would survive
+	// logout and reappear on the next load with truncated content.
+	for i := 0; i < 20; i++ {
 		_ = keyring.Delete(KeyringService, fmt.Sprintf("%s_%d", key, i))
 	}
 	return primaryErr

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 )
 
 // These values are injected at build time via -ldflags for production builds.
@@ -26,30 +27,39 @@ type Config struct {
 	WebDashboardURL string
 }
 
-var loaded *Config
+var (
+	loaded     *Config
+	loadedOnce sync.Once
+)
 
-// Get returns the app configuration. Values are baked in at build time.
-// Falls back to config.json for dev mode (wails dev).
+// Get returns the app configuration. Values are baked in at build time
+// (via -ldflags) and fall back to config.json for dev mode.
+//
+// sync.Once is deliberate: the previous implementation had a race where
+// `loaded` was assigned a zero-value struct before the dev-fallback
+// panic fired, so a concurrent second caller could observe a non-nil
+// but empty Config and downstream would panic with a misleading "URL
+// scheme" error. See C-API-3.
 func Get() *Config {
-	if loaded != nil {
-		return loaded
-	}
-
-	loaded = &Config{
-		APIURL:          apiURL,
-		CognitoRegion:   cognitoRegion,
-		CognitoPoolID:   cognitoPoolID,
-		CognitoClientID: cognitoClientID,
-		WebDashboardURL: webDashboardURL,
-	}
-
-	// If ldflags not injected (dev mode), try loading from config.json
-	if loaded.APIURL == "" || loaded.CognitoClientID == "" {
-		if err := loadFromFile(loaded); err != nil {
-			panic("Config not available. For production: use build.ps1. For dev: create config.json from config.example.json.")
+	loadedOnce.Do(func() {
+		cfg := &Config{
+			APIURL:          apiURL,
+			CognitoRegion:   cognitoRegion,
+			CognitoPoolID:   cognitoPoolID,
+			CognitoClientID: cognitoClientID,
+			WebDashboardURL: webDashboardURL,
 		}
-	}
-
+		// If ldflags not injected (dev mode), try loading from config.json
+		if cfg.APIURL == "" || cfg.CognitoClientID == "" {
+			if err := loadFromFile(cfg); err != nil {
+				panic("Config not available. For production: use build.ps1. For dev: create config.json from config.example.json.")
+			}
+		}
+		// Only commit to the package-level pointer after the struct is
+		// fully populated — concurrent callers either see the full
+		// config or block in sync.Once, never observe a half-state.
+		loaded = cfg
+	})
 	return loaded
 }
 
