@@ -9,12 +9,14 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	"taskflow-desktop/internal/security"
 )
 
 const (
@@ -39,8 +41,17 @@ var allowedUpdateHosts = []string{
 	"github-releases.githubusercontent.com",
 }
 
-// CurrentVersion is injected at build time via -ldflags.
-var CurrentVersion = "1.0.0"
+// CurrentVersion is injected at build time via -ldflags. The default
+// "dev" sentinel causes CheckForUpdate to early-return: without it,
+// wails dev builds would see the live GitHub release as "an update"
+// and spam update:available events on startup. See H-UPD-2.
+var CurrentVersion = "dev"
+
+// installInProgress guards InstallUpdate against double-invocation.
+// A user double-clicking "Update Now" used to launch two parallel
+// downloads and two UAC prompts; the second install could truncate
+// the installer the first was still writing to. See H-UPD-1.
+var installInProgress atomic.Bool
 
 // Release represents a GitHub release.
 type Release struct {
@@ -71,28 +82,16 @@ type UpdateInfo struct {
 	ChecksumURL string `json:"-"`
 }
 
-// validateHTTPSURL parses raw, rejects any scheme other than https, and
-// rejects any host that is not in the allow list. Returns the parsed URL
-// for the caller to use (callers must use u.String(), never the raw input).
-func validateHTTPSURL(raw string, allowed []string) (*url.URL, error) {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return nil, fmt.Errorf("invalid URL: %w", err)
-	}
-	if u.Scheme != "https" {
-		return nil, fmt.Errorf("URL must be https, got %q", u.Scheme)
-	}
-	host := strings.ToLower(u.Hostname())
-	for _, a := range allowed {
-		if host == a || strings.HasSuffix(host, "."+a) {
-			return u, nil
-		}
-	}
-	return nil, fmt.Errorf("host %q not in allowlist", host)
-}
-
 // CheckForUpdate checks GitHub releases for a newer version.
+// Dev builds (CurrentVersion == "dev") short-circuit here — we never
+// want a wails-dev session to chase "updates" against the live
+// GitHub release, and ldflags inject the real version in prod builds.
+// See H-UPD-2.
 func CheckForUpdate() (*UpdateInfo, error) {
+	if CurrentVersion == "dev" {
+		return &UpdateInfo{Available: false, CurrentVer: "dev"}, nil
+	}
+
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest("GET", CheckURL, nil)
 	if err != nil {
@@ -173,6 +172,16 @@ func CheckForUpdate() (*UpdateInfo, error) {
 //   - Verifies the downloaded bytes against the SHA-256 hash published in
 //     the release's SHA256SUMS asset. No verified checksum ⇒ no install.
 func DownloadAndInstall(info *UpdateInfo) error {
+	// Re-entry guard (H-UPD-1). A user double-clicking "Update Now"
+	// used to launch two parallel downloads and two UAC prompts; the
+	// second install could truncate the installer file the first was
+	// still writing to. CompareAndSwap is single-owner — the first
+	// call wins, the second sees the flag already set and bails.
+	if !installInProgress.CompareAndSwap(false, true) {
+		return fmt.Errorf("an update installation is already in progress")
+	}
+	defer installInProgress.Store(false)
+
 	if info == nil || !info.Available || info.DownloadURL == "" {
 		return fmt.Errorf("no update available")
 	}
@@ -180,11 +189,11 @@ func DownloadAndInstall(info *UpdateInfo) error {
 		return fmt.Errorf("refusing to install update: release is missing %s — cannot verify integrity", ChecksumAssetName)
 	}
 
-	dlURL, err := validateHTTPSURL(info.DownloadURL, allowedUpdateHosts)
+	dlURL, err := security.ValidateHTTPSURL(info.DownloadURL, allowedUpdateHosts)
 	if err != nil {
 		return fmt.Errorf("download URL rejected: %w", err)
 	}
-	csURL, err := validateHTTPSURL(info.ChecksumURL, allowedUpdateHosts)
+	csURL, err := security.ValidateHTTPSURL(info.ChecksumURL, allowedUpdateHosts)
 	if err != nil {
 		return fmt.Errorf("checksum URL rejected: %w", err)
 	}
@@ -245,7 +254,7 @@ func downloadToFile(rawURL, destPath string) error {
 	client := &http.Client{
 		Timeout: 5 * time.Minute,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if _, err := validateHTTPSURL(req.URL.String(), allowedUpdateHosts); err != nil {
+			if _, err := security.ValidateHTTPSURL(req.URL.String(), allowedUpdateHosts); err != nil {
 				return fmt.Errorf("redirect refused: %w", err)
 			}
 			if len(via) >= 10 {
@@ -291,7 +300,7 @@ func fetchExpectedChecksum(rawURL, fileName string) (string, error) {
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if _, err := validateHTTPSURL(req.URL.String(), allowedUpdateHosts); err != nil {
+			if _, err := security.ValidateHTTPSURL(req.URL.String(), allowedUpdateHosts); err != nil {
 				return fmt.Errorf("redirect refused: %w", err)
 			}
 			if len(via) >= 10 {
