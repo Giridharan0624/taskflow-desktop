@@ -9,7 +9,7 @@ declare global {
       main: {
         App: {
           Login(email: string, password: string): Promise<LoginResult>;
-          SetNewPassword(session: string, newPassword: string): Promise<void>;
+          SetNewPassword(newPassword: string): Promise<void>;
           Logout(): Promise<void>;
           SignIn(data: StartTimerData): Promise<Attendance>;
           SignOut(): Promise<Attendance>;
@@ -33,7 +33,6 @@ declare global {
 export interface LoginResult {
   success: boolean;
   requiresNewPassword: boolean;
-  session?: string;
   userId?: string;
   email?: string;
   name?: string;

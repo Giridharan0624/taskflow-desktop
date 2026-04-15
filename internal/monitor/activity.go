@@ -37,14 +37,26 @@ type ActivityMonitor struct {
 	onNotify      NotifyFunc
 
 	// Current bucket counters (reset every 5 min)
-	keyboardCount   int
-	mouseCount      int
-	activeSeconds   int
-	idleSeconds     int
-	appUsage map[string]int // app name → seconds in current bucket
+	keyboardCount int
+	mouseCount    int
+	activeSeconds int
+	idleSeconds   int
+	appUsage      map[string]int // app name → seconds in current bucket
 
 	running bool
 	cancel  context.CancelFunc // cancels all goroutines on Stop()
+	wg      sync.WaitGroup     // joined by Stop so goroutines are fully drained
+}
+
+// sleepOrCancel blocks for d or returns early if ctx is cancelled.
+// Used instead of time.Sleep in any goroutine that must honor shutdown.
+func sleepOrCancel(ctx context.Context, d time.Duration) error {
+	select {
+	case <-time.After(d):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // NewActivityMonitor creates a new activity monitor.
@@ -72,32 +84,69 @@ func (m *ActivityMonitor) Start(parentCtx context.Context) {
 		m.mu.Unlock()
 		return
 	}
+	ctx, cancel := context.WithCancel(parentCtx)
+	m.cancel = cancel
 	m.running = true
-	var ctx context.Context
-	ctx, m.cancel = context.WithCancel(parentCtx)
+	// Register all three goroutines BEFORE spawning so Stop cannot observe a
+	// partially-populated WaitGroup.
+	m.wg.Add(3)
 	m.mu.Unlock()
 
 	log.Println("Activity monitor started")
 
-	go m.trackActivity(ctx)
-	go m.captureScreenshots(ctx)
-	go m.sendHeartbeats(ctx)
+	go func() {
+		defer m.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("trackActivity recovered from panic: %v", r)
+			}
+		}()
+		m.trackActivity(ctx)
+	}()
+	go func() {
+		defer m.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("captureScreenshots recovered from panic: %v", r)
+			}
+		}()
+		m.captureScreenshots(ctx)
+	}()
+	go func() {
+		defer m.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("sendHeartbeats recovered from panic: %v", r)
+			}
+		}()
+		m.sendHeartbeats(ctx)
+	}()
 }
 
-// Stop halts activity monitoring. Safe to call multiple times — no-ops if already stopped.
+// Stop halts activity monitoring and waits for all goroutines to exit.
+// Safe to call multiple times — no-ops if already stopped.
 func (m *ActivityMonitor) Stop() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if !m.running {
+		m.mu.Unlock()
 		return
 	}
-
 	m.running = false
 	if m.cancel != nil {
 		m.cancel()
+		m.cancel = nil
 	}
+	m.mu.Unlock()
+
+	// CRITICAL: drain goroutines before returning. Without this, a rapid
+	// Stop→Start cycle (e.g. re-login) can leave old goroutines running
+	// concurrently with new ones, corrupting counter state.
+	m.wg.Wait()
+
+	m.mu.Lock()
 	m.resetBucketLocked()
+	m.mu.Unlock()
+
 	log.Println("Activity monitor stopped")
 }
 
@@ -198,9 +247,15 @@ func (m *ActivityMonitor) sendHeartbeats(ctx context.Context) {
 func (m *ActivityMonitor) sendCurrentBucket(screenshotURL string) {
 	m.mu.Lock()
 
+	// Deep-copy appUsage before releasing the lock. The live m.appUsage map is
+	// cleared in place by resetBucketLocked and mutated by trackActivity on the
+	// next tick; embedding the raw reference into the bucket would corrupt the
+	// JSON serialization of this heartbeat.
 	topApp := ""
 	topTime := 0
+	appCopy := make(map[string]int, len(m.appUsage))
 	for app, seconds := range m.appUsage {
+		appCopy[app] = seconds
 		if seconds > topTime {
 			topApp = app
 			topTime = seconds
@@ -214,7 +269,7 @@ func (m *ActivityMonitor) sendCurrentBucket(screenshotURL string) {
 		"active_seconds": m.activeSeconds,
 		"idle_seconds":   m.idleSeconds,
 		"top_app":        topApp,
-		"app_breakdown":  m.appUsage,
+		"app_breakdown":  appCopy,
 	}
 	if screenshotURL != "" {
 		bucket["screenshot_url"] = screenshotURL
@@ -269,14 +324,16 @@ func (m *ActivityMonitor) captureScreenshots(ctx context.Context) {
 			if !m.appState.IsTimerActive() {
 				continue
 			}
-			m.takeAndUploadScreenshot()
+			m.takeAndUploadScreenshot(ctx)
 		}
 	}
 }
 
 // takeAndUploadScreenshot captures the screen, uploads to S3, and stores the URL.
 // Has panic recovery to prevent screenshot failures from crashing the app.
-func (m *ActivityMonitor) takeAndUploadScreenshot() {
+// Honors ctx cancellation during the warning window so a Stop/Logout during
+// the 5-second warning does NOT produce a post-stop capture (privacy contract).
+func (m *ActivityMonitor) takeAndUploadScreenshot(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("Screenshot capture recovered from panic: %v", r)
@@ -286,7 +343,10 @@ func (m *ActivityMonitor) takeAndUploadScreenshot() {
 	if m.onNotify != nil {
 		m.onNotify("TaskFlow", "Screenshot in 5 seconds...")
 	}
-	time.Sleep(ScreenshotWarningTime)
+	if err := sleepOrCancel(ctx, ScreenshotWarningTime); err != nil {
+		// Monitor was stopped during the warning window — DO NOT capture.
+		return
+	}
 
 	// Capture (CaptureScreen checks lock state internally)
 	jpegData, err := m.screenshotCap.CaptureScreenDefault()

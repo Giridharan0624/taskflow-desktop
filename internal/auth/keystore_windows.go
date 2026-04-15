@@ -60,8 +60,11 @@ func (s *Service) loadTokensFromKeyring() (*Tokens, error) {
 		}
 		plain, err := decryptDPAPI(encrypted)
 		if err != nil {
-			// Fallback: might be unencrypted (from older version)
-			plain = encrypted
+			// No plaintext fallback: a same-user process could forge a
+			// plaintext keyring entry and trivially bypass DPAPI. Wipe the
+			// stored tokens and force re-authentication.
+			s.deleteTokensFromKeyring()
+			return nil, fmt.Errorf("stored %s is corrupt or tampered, please log in again: %w", key, err)
 		}
 		decrypted[key] = plain
 	}

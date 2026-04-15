@@ -38,10 +38,13 @@ const (
 )
 
 // LoginResult is returned from the Login method.
+// The Cognito challenge Session is intentionally NOT part of this struct:
+// it must never cross the Wails IPC boundary into the JS renderer, where
+// any script (including a compromised third-party dependency) could read it.
+// The session is stored on Service and consumed by CompleteNewPasswordChallenge.
 type LoginResult struct {
 	Success             bool   `json:"success"`
 	RequiresNewPassword bool   `json:"requiresNewPassword"`
-	Session             string `json:"session,omitempty"` // Used for NEW_PASSWORD_REQUIRED challenge
 	UserID              string `json:"userId,omitempty"`
 	Email               string `json:"email,omitempty"`
 	Name                string `json:"name,omitempty"`
@@ -57,11 +60,16 @@ type Tokens struct {
 
 // Service handles authentication with AWS Cognito.
 type Service struct {
-	client         *cognito.Client
-	tokens         *Tokens
-	state          *state.AppState
-	clientID       string // Cognito app client ID from config
-	lastLoginEmail string // stored for NEW_PASSWORD_REQUIRED challenge
+	client   *cognito.Client
+	tokens   *Tokens
+	state    *state.AppState
+	clientID string // Cognito app client ID from config
+
+	// Challenge state for NEW_PASSWORD_REQUIRED. Never serialized over IPC —
+	// kept entirely on the Go side so the JS renderer cannot read the
+	// Cognito session token.
+	lastLoginEmail   string
+	lastLoginSession string
 }
 
 // NewService creates a new auth service.
@@ -113,14 +121,21 @@ func (s *Service) Login(identifier, password string) (*LoginResult, error) {
 		return nil, fmt.Errorf("authentication failed: %w", err)
 	}
 
-	// Handle NEW_PASSWORD_REQUIRED challenge (first-time login)
+	// Handle NEW_PASSWORD_REQUIRED challenge (first-time login).
+	// The Cognito session is stored internally and consumed by
+	// CompleteNewPasswordChallenge — it never crosses the IPC boundary.
 	if result.ChallengeName == types.ChallengeNameTypeNewPasswordRequired {
+		if result.Session != nil {
+			s.lastLoginSession = *result.Session
+		}
 		return &LoginResult{
 			Success:             false,
 			RequiresNewPassword: true,
-			Session:             *result.Session,
 		}, nil
 	}
+
+	// A successful login invalidates any pending challenge state.
+	s.lastLoginSession = ""
 
 	// Success — store tokens
 	if result.AuthenticationResult == nil {
@@ -150,11 +165,17 @@ func (s *Service) Login(identifier, password string) (*LoginResult, error) {
 }
 
 // CompleteNewPasswordChallenge handles the first-login password change.
-func (s *Service) CompleteNewPasswordChallenge(session, newPassword string) error {
+// The Cognito challenge session is read from internal state (set during Login),
+// never passed across the IPC boundary.
+func (s *Service) CompleteNewPasswordChallenge(newPassword string) error {
+	if s.lastLoginSession == "" {
+		return fmt.Errorf("no pending password challenge; please log in again")
+	}
+
 	input := &cognito.RespondToAuthChallengeInput{
 		ChallengeName: types.ChallengeNameTypeNewPasswordRequired,
 		ClientId:      aws.String(s.clientID),
-		Session:       aws.String(session),
+		Session:       aws.String(s.lastLoginSession),
 		ChallengeResponses: map[string]string{
 			"NEW_PASSWORD": newPassword,
 			"USERNAME":     s.getStoredUsername(),
@@ -176,6 +197,9 @@ func (s *Service) CompleteNewPasswordChallenge(session, newPassword string) erro
 		RefreshToken: *result.AuthenticationResult.RefreshToken,
 		ExpiresAt:    time.Now().Add(time.Duration(result.AuthenticationResult.ExpiresIn) * time.Second).Unix(),
 	}
+
+	// Challenge consumed — clear it so a second call cannot replay.
+	s.lastLoginSession = ""
 
 	return s.saveTokensToKeyring()
 }
@@ -214,9 +238,10 @@ func (s *Service) GetIDToken() (string, error) {
 	return s.tokens.IDToken, nil
 }
 
-// Logout clears all stored tokens.
+// Logout clears all stored tokens and any pending challenge state.
 func (s *Service) Logout() {
 	s.tokens = nil
+	s.lastLoginSession = ""
 	s.deleteTokensFromKeyring()
 }
 

@@ -237,6 +237,15 @@ jobs:
           echo "=== Release files ==="
           ls -la release-files/
 
+      - name: Generate SHA256SUMS
+        # Required by the in-app updater (see internal/updater/updater.go):
+        # without this file, the updater will refuse to install the release.
+        run: |
+          cd release-files
+          sha256sum * > SHA256SUMS
+          echo "=== SHA256SUMS ==="
+          cat SHA256SUMS
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

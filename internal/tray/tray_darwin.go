@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"strings"
 	"sync"
 
 	"taskflow-desktop/internal/config"
@@ -65,6 +66,13 @@ func (m *Manager) Stop() {
 }
 
 // ShowBalloon displays a macOS notification using osascript.
+//
+// Title and message originate from server-controlled data (e.g. task titles
+// from the backend). They MUST NOT be string-interpolated into the
+// AppleScript source — doing that would let a compromised backend inject
+// arbitrary shell via crafted `"` characters (C-TRAY-3). Instead we pass the
+// AppleScript as a fixed program that reads arguments from `on run argv`,
+// with the untrusted strings handed in after `--` as pure data.
 func (m *Manager) ShowBalloon(title, message string) {
 	if !m.running {
 		log.Println("ShowBalloon skipped: tray not running")
@@ -72,9 +80,29 @@ func (m *Manager) ShowBalloon(title, message string) {
 	}
 	log.Printf("ShowBalloon: %s — %s", title, message)
 
-	exec.Command("osascript", "-e",
-		fmt.Sprintf(`display notification "%s" with title "%s"`, message, title),
-	).Start()
+	cmd := exec.Command("osascript",
+		"-e", "on run argv",
+		"-e", "display notification (item 1 of argv) with title (item 2 of argv)",
+		"-e", "end run",
+		"--",
+		sanitizeNotificationText(message),
+		sanitizeNotificationText(title),
+	)
+	if err := cmd.Start(); err != nil {
+		log.Printf("osascript launch failed: %v", err)
+	}
+}
+
+// sanitizeNotificationText removes control characters that could disrupt the
+// AppleScript `on run argv` path (the data path is already injection-safe,
+// but a stray NUL or newline would produce confusing notifications).
+func sanitizeNotificationText(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 32 && r != '\t' {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // SetTimerActive updates tray state based on timer status.

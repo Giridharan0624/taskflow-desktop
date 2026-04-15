@@ -14,7 +14,9 @@ export function LoginForm({ onSuccess }: LoginFormProps) {
   const [newPassword, setNewPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [challengeSession, setChallengeSession] = useState<string | null>(null);
+  // The Cognito challenge session lives entirely on the Go side; the
+  // frontend only tracks whether a challenge is pending.
+  const [challengePending, setChallengePending] = useState(false);
   const { isDark, toggle } = useTheme();
 
   async function handleLogin(e: Event) {
@@ -23,7 +25,7 @@ export function LoginForm({ onSuccess }: LoginFormProps) {
     setLoading(true);
     try {
       const result: LoginResult = await window.go.main.App.Login(email, password);
-      if (result.requiresNewPassword) { setChallengeSession(result.session!); setLoading(false); return; }
+      if (result.requiresNewPassword) { setChallengePending(true); setLoading(false); return; }
       onSuccess(await window.go.main.App.GetCurrentUser());
     } catch (err: any) {
       setError(friendlyError(err));
@@ -35,7 +37,7 @@ export function LoginForm({ onSuccess }: LoginFormProps) {
     setError("");
     setLoading(true);
     try {
-      await window.go.main.App.SetNewPassword(challengeSession!, newPassword);
+      await window.go.main.App.SetNewPassword(newPassword);
       onSuccess(await window.go.main.App.GetCurrentUser());
     } catch (err: any) {
       setError(friendlyError(err));
@@ -73,7 +75,7 @@ export function LoginForm({ onSuccess }: LoginFormProps) {
         </div>
 
         <div class="w-full max-w-sm card p-5">
-        {challengeSession ? (
+        {challengePending ? (
           <form onSubmit={handleNewPassword}>
             <h2 class="text-[15px] font-semibold mb-1" style={{ color: "var(--color-text)" }}>Set New Password</h2>
             <p class="text-[11px] mb-4" style={{ color: "var(--color-text-muted)" }}>First login — choose a password.</p>

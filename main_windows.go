@@ -23,9 +23,10 @@ func ensureSingleInstance() {
 		uintptr(unsafe.Pointer(name)),
 	)
 
-	const ERROR_ALREADY_EXISTS = 183
-	if handle == 0 || err == syscall.Errno(ERROR_ALREADY_EXISTS) {
-		// Another instance is running — show message and exit
+	const ERROR_ALREADY_EXISTS = syscall.Errno(183)
+	// CreateMutexW returns a valid handle even when the named mutex already exists;
+	// GetLastError is then ERROR_ALREADY_EXISTS. Only treat that exact case as "already running".
+	if handle != 0 && err == ERROR_ALREADY_EXISTS {
 		msg, _ := syscall.UTF16PtrFromString("TaskFlow Desktop is already running.\nCheck your system tray.")
 		title, _ := syscall.UTF16PtrFromString("TaskFlow Desktop")
 		syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW").Call(

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -19,21 +20,31 @@ import (
 
 // App is the main application struct. Methods bound to the frontend via Wails.
 type App struct {
-	ctx               context.Context // The EXACT Wails context — required for runtime calls
-	stopChan          chan struct{}   // Signal to stop background goroutines
-	quitting          bool           // True when user clicks Quit from tray
-	networkErrorCount int            // Consecutive network errors
+	ctx      context.Context // The EXACT Wails context — required for runtime calls
+	trayStop chan struct{}   // App-lifetime stop signal for the tray message loop
+
+	// sessionMu guards the session-scoped fields below. A "session" spans from
+	// login to logout; each login creates a fresh context so re-login cleanly
+	// replaces the previous session's background goroutines instead of racing
+	// them.
+	sessionMu     sync.Mutex
+	sessionCtx    context.Context
+	sessionCancel context.CancelFunc
+	sessionWG     sync.WaitGroup
+
+	quitting          bool // True when user clicks Quit from tray
+	networkErrorCount int  // Consecutive network errors
 	State             *state.AppState
-	AuthService     *auth.Service
-	APIClient       *api.Client
-	ActivityMonitor *monitor.ActivityMonitor
-	TrayManager     *tray.Manager
+	AuthService       *auth.Service
+	APIClient         *api.Client
+	ActivityMonitor   *monitor.ActivityMonitor
+	TrayManager       *tray.Manager
 }
 
 // startup is called when the app starts. The context is saved for runtime calls.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx // Store the EXACT Wails context — never wrap or replace it
-	a.stopChan = make(chan struct{})
+	a.trayStop = make(chan struct{})
 
 	a.AuthService = auth.NewService(a.State)
 	a.APIClient = api.NewClient(a.AuthService, a.State)
@@ -80,8 +91,10 @@ func (a *App) startup(ctx context.Context) {
 		a.startBackgroundServices()
 	}
 
-	// Start system tray (pure Win32 — no library conflict with Wails)
-	go a.TrayManager.Start(a.stopChan)
+	// Start system tray (pure Win32 — no library conflict with Wails).
+	// Uses trayStop (app-lifetime) rather than the session context, since the
+	// tray must persist across logout/re-login.
+	go a.TrayManager.Start(a.trayStop)
 
 	// Check for updates silently on startup
 	go func() {
@@ -102,6 +115,13 @@ func (a *App) startup(ctx context.Context) {
 func (a *App) shutdown(ctx context.Context) {
 	a.stopBackgroundServices()
 	a.ActivityMonitor.Stop()
+	// Close the tray signal and stop the tray manager last, so any final
+	// balloon notifications from shutting services have already drained.
+	select {
+	case <-a.trayStop:
+	default:
+		close(a.trayStop)
+	}
 	a.TrayManager.Stop()
 	log.Println("Application shutdown complete")
 }
@@ -116,36 +136,59 @@ func (a *App) beforeClose(ctx context.Context) (prevent bool) {
 	return true // Minimize to tray
 }
 
-// startBackgroundServices starts polling (activity monitor is started/stopped by timer state).
+// startBackgroundServices starts per-session polling. If a previous session is
+// still running (e.g. re-login without an explicit Logout), its goroutines are
+// cancelled and drained BEFORE the new session is spawned. Without this, each
+// re-login would leak another pollAttendance goroutine racing the last.
 func (a *App) startBackgroundServices() {
-	// Reset stop channel if it was previously closed
-	select {
-	case <-a.stopChan:
-		a.stopChan = make(chan struct{})
-	default:
-	}
+	a.sessionMu.Lock()
+	prevCancel := a.sessionCancel
+	a.sessionCancel = nil
+	a.sessionMu.Unlock()
 
-	go a.pollAttendance()
+	if prevCancel != nil {
+		prevCancel()
+	}
+	// Drain previous goroutines before spawning new ones. Safe to call with
+	// a zero WaitGroup (no-op when there are no pending goroutines).
+	a.sessionWG.Wait()
+
+	a.sessionMu.Lock()
+	sctx, scancel := context.WithCancel(a.ctx)
+	a.sessionCtx = sctx
+	a.sessionCancel = scancel
+	a.sessionMu.Unlock()
+
+	a.sessionWG.Add(1)
+	go func() {
+		defer a.sessionWG.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("pollAttendance recovered from panic: %v", r)
+			}
+		}()
+		a.pollAttendance(sctx)
+	}()
 }
 
-// stopBackgroundServices signals all goroutines to stop.
+// stopBackgroundServices cancels the session context and waits for all
+// per-session goroutines to exit. Does not return until every goroutine has
+// observed the cancellation — this is what guarantees the next Start cannot
+// race a stale goroutine.
 func (a *App) stopBackgroundServices() {
-	select {
-	case <-a.stopChan:
-		// Already closed
-	default:
-		close(a.stopChan)
+	a.sessionMu.Lock()
+	cancel := a.sessionCancel
+	a.sessionCancel = nil
+	a.sessionMu.Unlock()
+
+	if cancel != nil {
+		cancel()
 	}
+	a.sessionWG.Wait()
 }
 
 // pollAttendance polls GET /attendance/me every 10 seconds to sync with web app.
-func (a *App) pollAttendance() {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("pollAttendance recovered from panic: %v", r)
-		}
-	}()
-
+func (a *App) pollAttendance(ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
@@ -153,7 +196,7 @@ func (a *App) pollAttendance() {
 
 	for {
 		select {
-		case <-a.stopChan:
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			a.fetchAttendance()
@@ -230,15 +273,16 @@ func (a *App) Login(email, password string) (*auth.LoginResult, error) {
 }
 
 // SetNewPassword completes the NEW_PASSWORD_REQUIRED challenge.
-func (a *App) SetNewPassword(session, newPassword string) error {
-	if session == "" {
-		return fmt.Errorf("invalid session")
-	}
+// The Cognito session token stays on the Go side — the frontend never sees it
+// and never passes it back (see C-AUTH-2 / T-AUTH-2).
+func (a *App) SetNewPassword(newPassword string) error {
 	if len(newPassword) < 8 {
 		return fmt.Errorf("password must be at least 8 characters")
 	}
-	err := a.AuthService.CompleteNewPasswordChallenge(session, newPassword)
-	if err != nil {
+	if len(newPassword) > 256 {
+		return fmt.Errorf("password too long")
+	}
+	if err := a.AuthService.CompleteNewPasswordChallenge(newPassword); err != nil {
 		return err
 	}
 

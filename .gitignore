@@ -18,7 +18,11 @@ wails_bindings/
 frontend/wailsjs/
 
 # Config (contains environment-specific values — use config.example.json)
+# config.json is the active file dev.ps1 copies into from the env-specific
+# variants below. All three stay untracked.
 config.json
+config.staging.json
+config.prod.json
 
 # Temp scripts
 check.ps1
