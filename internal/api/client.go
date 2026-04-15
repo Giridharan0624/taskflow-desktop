@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -12,8 +13,25 @@ import (
 
 	"taskflow-desktop/internal/auth"
 	"taskflow-desktop/internal/config"
+	"taskflow-desktop/internal/security"
 	"taskflow-desktop/internal/state"
 )
+
+// allowedUploadHosts is the host allowlist for presigned S3 upload URLs
+// returned by the backend. A compromised or misconfigured backend could
+// otherwise redirect screenshot PUTs (which contain a frame of the
+// user's screen) to an attacker-controlled host. See C-API-1.
+//
+// Covers:
+//   - amazonaws.com: any AWS-hosted S3 endpoint (s3.ap-south-1.amazonaws.com,
+//     taskflow-uploads.s3.amazonaws.com, s3.amazonaws.com, etc.)
+//   - cloudfront.net: CloudFront distributions in front of S3
+//
+// If you introduce a custom domain for uploads, add it here.
+var allowedUploadHosts = []string{
+	"amazonaws.com",
+	"cloudfront.net",
+}
 
 // StartTimerData is the payload for POST /attendance/sign-in.
 type StartTimerData struct {
@@ -131,7 +149,10 @@ func (c *Client) GetMyAttendance() (*Attendance, error) {
 	}
 
 	// Convert snake_case response to camelCase to match Go struct json tags
-	converted := snakeToCamel(body)
+	converted, err := snakeToCamel(body)
+	if err != nil {
+		return nil, fmt.Errorf("attendance response: %w", err)
+	}
 	var attendance Attendance
 	if err := json.Unmarshal(converted, &attendance); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
@@ -175,7 +196,10 @@ func (c *Client) SignIn(data StartTimerData) (*Attendance, error) {
 	}
 
 	// Convert snake_case response to camelCase and parse
-	converted := snakeToCamel(resp.Body())
+	converted, err := snakeToCamel(resp.Body())
+	if err != nil {
+		return nil, fmt.Errorf("sign-in response: %w", err)
+	}
 	var attendance Attendance
 	if err := json.Unmarshal(converted, &attendance); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
@@ -200,7 +224,10 @@ func (c *Client) SignOut() (*Attendance, error) {
 		return nil, apiError("sign-out", resp)
 	}
 
-	converted := snakeToCamel(resp.Body())
+	converted, err := snakeToCamel(resp.Body())
+	if err != nil {
+		return nil, fmt.Errorf("sign-out response: %w", err)
+	}
 	var attendance Attendance
 	if err := json.Unmarshal(converted, &attendance); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
@@ -225,7 +252,10 @@ func (c *Client) GetMyTasks() ([]Task, error) {
 		return nil, apiError("fetch tasks", resp)
 	}
 
-	converted := snakeToCamel(resp.Body())
+	converted, err := snakeToCamel(resp.Body())
+	if err != nil {
+		return nil, fmt.Errorf("tasks response: %w", err)
+	}
 	var tasks []Task
 	if err := json.Unmarshal(converted, &tasks); err != nil {
 		return nil, fmt.Errorf("failed to parse tasks: %w", err)
@@ -250,7 +280,10 @@ func (c *Client) GetCurrentUser() (*User, error) {
 		return nil, apiError("fetch user", resp)
 	}
 
-	converted := snakeToCamel(resp.Body())
+	converted, err := snakeToCamel(resp.Body())
+	if err != nil {
+		return nil, fmt.Errorf("user response: %w", err)
+	}
 	var user User
 	if err := json.Unmarshal(converted, &user); err != nil {
 		return nil, fmt.Errorf("failed to parse user: %w", err)
@@ -278,8 +311,18 @@ func (c *Client) SendActivityHeartbeat(data map[string]interface{}) error {
 	return nil
 }
 
-// UploadScreenshot uploads a screenshot to S3 via presigned URL.
+// UploadScreenshot uploads a screenshot to S3 via a presigned URL.
 // Returns the CDN URL of the uploaded file.
+//
+// Trust-boundary notes:
+//   - filename is URL-escaped before being joined into the presign query
+//     string. A crafted filename containing "&contentType=text/html"
+//     could otherwise override the contentType parameter we send next
+//     in the same query. See C-API-2.
+//   - presignResp.UploadURL is server-controlled. We validate it against
+//     allowedUploadHosts before PUTting JPEG bytes to it, so a
+//     compromised backend cannot redirect a frame of the user's screen
+//     to an attacker host. See C-API-1.
 func (c *Client) UploadScreenshot(jpegData []byte, filename string) (string, error) {
 	// Step 1: Get presigned URL
 	req, err := c.request()
@@ -287,7 +330,10 @@ func (c *Client) UploadScreenshot(jpegData []byte, filename string) (string, err
 		return "", err
 	}
 
-	presignURL := fmt.Sprintf("/uploads/presign?type=screenshot&filename=%s&contentType=image/jpeg", filename)
+	presignURL := fmt.Sprintf(
+		"/uploads/presign?type=screenshot&filename=%s&contentType=image/jpeg",
+		url.QueryEscape(filename),
+	)
 	resp, err := req.Get(presignURL)
 	if err != nil {
 		return "", fmt.Errorf("presign network error: %w", err)
@@ -296,7 +342,10 @@ func (c *Client) UploadScreenshot(jpegData []byte, filename string) (string, err
 		return "", apiError("upload presign", resp)
 	}
 
-	converted := snakeToCamel(resp.Body())
+	converted, err := snakeToCamel(resp.Body())
+	if err != nil {
+		return "", fmt.Errorf("presign response: %w", err)
+	}
 	var presignResp struct {
 		UploadURL string `json:"uploadUrl"`
 		FileURL   string `json:"fileUrl"`
@@ -305,11 +354,19 @@ func (c *Client) UploadScreenshot(jpegData []byte, filename string) (string, err
 		return "", fmt.Errorf("failed to parse presign response: %w", err)
 	}
 
-	// Step 2: Upload directly to S3
+	// Reject any upload URL that isn't https + in our allowlist. Without
+	// this, a compromised backend can point screenshot PUTs at an
+	// attacker-controlled host.
+	uploadURL, err := security.ValidateHTTPSURL(presignResp.UploadURL, allowedUploadHosts)
+	if err != nil {
+		return "", fmt.Errorf("refusing screenshot upload: %w", err)
+	}
+
+	// Step 2: Upload directly to S3 (via the validated URL).
 	s3Resp, err := c.http.R().
 		SetHeader("Content-Type", "image/jpeg").
 		SetBody(jpegData).
-		Put(presignResp.UploadURL)
+		Put(uploadURL.String())
 	if err != nil {
 		return "", fmt.Errorf("S3 upload network error: %w", err)
 	}
@@ -320,27 +377,44 @@ func (c *Client) UploadScreenshot(jpegData []byte, filename string) (string, err
 	return presignResp.FileURL, nil
 }
 
-// snakeToCamel is a helper to convert snake_case JSON keys to camelCase.
-// The backend returns snake_case; the frontend/Go structs use camelCase tags.
-// Handles both objects and arrays at the top level.
-func snakeToCamel(data []byte) []byte {
+// snakeToCamel converts a backend response body's snake_case JSON keys
+// into camelCase so it can be unmarshaled into our Go structs (whose
+// json tags are camelCase).
+//
+// Handles both objects and arrays at the top level. Returns an error if
+// the body is not JSON — previously we silently returned the raw bytes,
+// which let HTML error pages from a WAF or reverse proxy slip through
+// and surface downstream as a confusing "failed to parse" error.
+// See H-API-3.
+func snakeToCamel(data []byte) ([]byte, error) {
 	// Try as object first
 	var raw map[string]interface{}
 	if err := json.Unmarshal(data, &raw); err == nil {
-		converted := convertKeys(raw)
-		result, _ := json.Marshal(converted)
-		return result
+		result, err := json.Marshal(convertKeys(raw))
+		if err != nil {
+			return nil, fmt.Errorf("re-marshal converted object: %w", err)
+		}
+		return result, nil
 	}
 
 	// Try as array
 	var arr []interface{}
 	if err := json.Unmarshal(data, &arr); err == nil {
-		converted := convertArray(arr)
-		result, _ := json.Marshal(converted)
-		return result
+		result, err := json.Marshal(convertArray(arr))
+		if err != nil {
+			return nil, fmt.Errorf("re-marshal converted array: %w", err)
+		}
+		return result, nil
 	}
 
-	return data
+	// Neither object nor array — almost always a proxy/WAF HTML error
+	// page that somehow got through with a 2xx status. Cap the preview
+	// so we don't drag a 10 KB page into the error string.
+	preview := data
+	if len(preview) > 80 {
+		preview = preview[:80]
+	}
+	return nil, fmt.Errorf("expected JSON response, got %d bytes of non-JSON: %q", len(data), preview)
 }
 
 func convertArray(arr []interface{}) []interface{} {
