@@ -67,6 +67,14 @@ const (
 	NIF_TIP     = 0x04
 	NIF_INFO    = 0x10
 
+	// Standard Windows message IDs. Posting WM_CLOSE to our hidden tray
+	// window lets DefWindowProc call DestroyWindow, which fires WM_DESTROY;
+	// trayWndProc then calls PostQuitMessage(0) which puts WM_QUIT in the
+	// thread's message queue. GetMessage sees WM_QUIT and returns 0, and
+	// the tray message loop exits cleanly. This is the Win32-canonical
+	// shutdown path — posting WM_QUIT directly to a hwnd is undefined.
+	WM_DESTROY       = 0x0002
+	WM_CLOSE         = 0x0010
 	WM_APP           = 0x8000
 	WM_TRAY_CALLBACK = WM_APP + 1
 	WM_COMMAND       = 0x0111
@@ -232,10 +240,12 @@ func (m *Manager) Start(done <-chan struct{}) {
 
 	log.Println("System tray started")
 
-	// Monitor done channel in separate goroutine
+	// Monitor the app-lifetime done channel. When the app shuts down, post
+	// WM_CLOSE to the tray window; DefWindowProc → DestroyWindow →
+	// WM_DESTROY → PostQuitMessage(0) → GetMessage returns 0 → loop exits.
 	go func() {
 		<-done
-		pPostMessage.Call(m.hwnd, 0x0012, 0, 0) // WM_CLOSE → triggers WM_QUIT
+		pPostMessage.Call(m.hwnd, WM_CLOSE, 0, 0)
 	}()
 
 	// Message loop — must run on the same thread as CreateWindowEx
@@ -263,14 +273,18 @@ func (m *Manager) cleanup() {
 	log.Println("System tray stopped")
 }
 
-// Stop shuts down the system tray.
+// Stop asks the tray message loop to exit. Idempotent and safe to call
+// from any goroutine. Posts WM_CLOSE, which flows through DefWindowProc →
+// DestroyWindow → WM_DESTROY → PostQuitMessage(0) → GetMessage returns 0.
+// The actual m.running=false flip happens in cleanup() once the loop has
+// drained, not here — Stop only signals.
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !m.running {
+	if !m.running || m.hwnd == 0 {
 		return
 	}
-	pPostMessage.Call(m.hwnd, 0x0012, 0, 0) // WM_QUIT via WM_CLOSE
+	pPostMessage.Call(m.hwnd, WM_CLOSE, 0, 0)
 }
 
 // ShowBalloon displays a Windows notification balloon from the tray icon.
@@ -336,6 +350,15 @@ func trayWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 	}()
 
 	switch msg {
+	case WM_DESTROY:
+		// WM_DESTROY arrives after DefWindowProc(WM_CLOSE) calls
+		// DestroyWindow. We translate it into WM_QUIT so that the
+		// message loop's GetMessage returns 0 and Start() can return.
+		// Without this the loop hangs forever, leaving a zombie process
+		// visible in Task Manager after the user clicks Quit.
+		pPostQuitMessage.Call(0)
+		return 0
+
 	case WM_TRAY_CALLBACK:
 		// With NOTIFYICON_VERSION_4, the event is in the low word of lParam
 		event := lParam & 0xFFFF

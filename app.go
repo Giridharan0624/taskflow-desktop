@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -32,8 +33,14 @@ type App struct {
 	sessionCancel context.CancelFunc
 	sessionWG     sync.WaitGroup
 
-	quitting          bool // True when user clicks Quit from tray
-	networkErrorCount int  // Consecutive network errors
+	// quitting is set from the tray-OnQuit goroutine and read from Wails'
+	// beforeClose thread. Without atomic.Bool, beforeClose can observe a
+	// stale `false` and hide the window instead of allowing the quit —
+	// leaving a ghost process with no tray icon in Task Manager.
+	quitting atomic.Bool
+	// networkErrorCount is read-modify-written from pollAttendance; if two
+	// sessions were ever live at once (pre-fix), the ++ would race.
+	networkErrorCount atomic.Int32
 	State             *state.AppState
 	AuthService       *auth.Service
 	APIClient         *api.Client
@@ -75,7 +82,7 @@ func (a *App) startup(ctx context.Context) {
 						log.Println("Timer stopped successfully")
 					}
 				}
-				a.quitting = true
+				a.quitting.Store(true)
 				a.ActivityMonitor.Stop()
 				a.TrayManager.Stop()
 				runtime.Quit(a.ctx)
@@ -128,8 +135,11 @@ func (a *App) shutdown(ctx context.Context) {
 
 // beforeClose is called when the user clicks the X button.
 // Minimize to tray instead of quitting — unless user clicked "Quit" from tray.
+// atomic.Bool.Load establishes a happens-before edge with the Store in the
+// tray OnQuit goroutine, so we never observe a stale `false` here after the
+// tray has committed to a full quit.
 func (a *App) beforeClose(ctx context.Context) (prevent bool) {
-	if a.quitting {
+	if a.quitting.Load() {
 		return false // Allow actual quit
 	}
 	runtime.WindowHide(a.ctx)
@@ -214,15 +224,14 @@ func (a *App) fetchAttendance() {
 	}()
 	attendance, err := a.APIClient.GetMyAttendance()
 	if err != nil {
-		a.networkErrorCount++
-		log.Printf("Failed to fetch attendance (attempt %d): %v", a.networkErrorCount, err)
-		if a.networkErrorCount >= 3 {
+		count := a.networkErrorCount.Add(1)
+		log.Printf("Failed to fetch attendance (attempt %d): %v", count, err)
+		if count >= 3 {
 			runtime.EventsEmit(a.ctx, "network:error", "Connection lost. Retrying...")
 		}
 		return
 	}
-	if a.networkErrorCount > 0 {
-		a.networkErrorCount = 0
+	if a.networkErrorCount.Swap(0) > 0 {
 		runtime.EventsEmit(a.ctx, "network:restored", nil)
 	}
 
