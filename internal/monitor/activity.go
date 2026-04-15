@@ -125,6 +125,11 @@ func (m *ActivityMonitor) Start(parentCtx context.Context) {
 
 // Stop halts activity monitoring and waits for all goroutines to exit.
 // Safe to call multiple times — no-ops if already stopped.
+//
+// Before resetting the bucket, any pending activity data is flushed to
+// the backend (H-MON-5). Without this, clicking SignOut or Logout would
+// silently throw away up to HeartbeatInterval (5 min) of keyboard/mouse
+// activity on the server side.
 func (m *ActivityMonitor) Stop() {
 	m.mu.Lock()
 	if !m.running {
@@ -138,16 +143,38 @@ func (m *ActivityMonitor) Stop() {
 	}
 	m.mu.Unlock()
 
-	// CRITICAL: drain goroutines before returning. Without this, a rapid
-	// Stop→Start cycle (e.g. re-login) can leave old goroutines running
-	// concurrently with new ones, corrupting counter state.
+	// CRITICAL: drain goroutines before touching the bucket. Without
+	// this, a rapid Stop→Start cycle (e.g. re-login) can leave old
+	// goroutines running concurrently with new ones, corrupting counter
+	// state.
 	m.wg.Wait()
 
-	m.mu.Lock()
-	m.resetBucketLocked()
-	m.mu.Unlock()
+	// Flush whatever activity accumulated in the current partial bucket.
+	// sendCurrentBucket resets the bucket as a side effect, so there is
+	// no separate reset step.
+	m.flushPendingLocked()
 
 	log.Println("Activity monitor stopped")
+}
+
+// flushPendingLocked sends the current bucket synchronously if it has
+// any data in it, then (via sendCurrentBucket's internal reset) leaves
+// the bucket empty. The "Locked" suffix is nominal — this method takes
+// the mutex itself, consistent with the rest of the flush path.
+//
+// If the backend rejects the heartbeat (e.g. session already closed
+// server-side after SignOut), sendCurrentBucket logs the error and
+// returns normally — we'd rather send one extra heartbeat that the
+// backend ignores than drop real activity data on the floor.
+func (m *ActivityMonitor) flushPendingLocked() {
+	m.mu.Lock()
+	hasData := m.keyboardCount > 0 || m.mouseCount > 0 ||
+		m.activeSeconds > 0 || m.idleSeconds > 0 || len(m.appUsage) > 0
+	m.mu.Unlock()
+	if !hasData {
+		return
+	}
+	m.sendCurrentBucket("")
 }
 
 // trackActivity runs every second to track idle state, input counts, and active window.
