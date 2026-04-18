@@ -2,7 +2,7 @@ name: Build Desktop App
 
 on:
   push:
-    branches: [main, feature/cross-platform]
+    branches: [main, feature/cross-platform, saas-migration]
   pull_request:
     branches: [main]
 
@@ -17,7 +17,12 @@ jobs:
           - os: windows-latest
             platform: windows/amd64
             artifact: taskflow-desktop.exe
-          - os: ubuntu-latest
+          # Pinned to 22.04 because this matrix entry installs
+          # libwebkit2gtk-4.0-dev, which is not available on 24.04 —
+          # ubuntu-latest migrated to 24.04 in early 2025, which
+          # silently broke every run. The dedicated 24.04 build lives
+          # in release.yml's build-linux-deb job.
+          - os: ubuntu-22.04
             platform: linux/amd64
             artifact: taskflow-desktop
           - os: macos-latest
@@ -48,7 +53,7 @@ jobs:
       # service instead of shelling out to notify-send. The only apt
       # packages still required are the CGO build-time deps.
       - name: Install Linux dependencies
-        if: matrix.os == 'ubuntu-latest'
+        if: startsWith(matrix.os, 'ubuntu-')
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc libgtk-3-dev libwebkit2gtk-4.0-dev \
@@ -56,7 +61,6 @@ jobs:
 
       - name: Build (Windows)
         if: matrix.os == 'windows-latest'
-        working-directory: desktop
         shell: powershell
         run: |
           $pkg = "taskflow-desktop/internal/config"
@@ -72,7 +76,6 @@ jobs:
 
       - name: Build (Unix)
         if: matrix.os != 'windows-latest'
-        working-directory: desktop
         shell: bash
         run: |
           PKG="taskflow-desktop/internal/config"
@@ -88,4 +91,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: taskflow-desktop-${{ matrix.os }}
-          path: desktop/build/bin/${{ matrix.artifact }}
+          path: build/bin/${{ matrix.artifact }}

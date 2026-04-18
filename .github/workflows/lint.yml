@@ -14,10 +14,10 @@ on:
 
 jobs:
   lint-and-test:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: desktop
+    # Pinned to 22.04 because this job installs libwebkit2gtk-4.0-dev
+    # (24.04 only ships 4.1). See ubuntu-24-smoke below for the 4.1
+    # counterpart.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -26,7 +26,7 @@ jobs:
         with:
           go-version: '1.22'
           cache: true
-          cache-dependency-path: desktop/go.sum
+          cache-dependency-path: go.sum
 
       # Linux-only build deps. The lint job doesn't run wails build but
       # `go vet` needs to compile packages that import CGO-heavy libs
@@ -63,17 +63,16 @@ jobs:
         run: go test -race -count=1 ./...
 
   cross-compile:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: desktop
+    # Pinned to 22.04 for the same webkit2gtk-4.0 reason as
+    # lint-and-test above.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
           cache: true
-          cache-dependency-path: desktop/go.sum
+          cache-dependency-path: go.sum
 
       - name: Install Linux build dependencies
         run: |
@@ -107,16 +106,13 @@ jobs:
   #      fine but break under the GNOME-on-Wayland default of 24.04
   ubuntu-24-smoke:
     runs-on: ubuntu-24.04
-    defaults:
-      run:
-        working-directory: desktop
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
           cache: true
-          cache-dependency-path: desktop/go.sum
+          cache-dependency-path: go.sum
 
       - name: Install build dependencies (webkit2gtk 4.1)
         run: |
