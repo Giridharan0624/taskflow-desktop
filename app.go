@@ -514,3 +514,29 @@ func (a *App) GetAppVersion() string {
 func (a *App) GetWebDashboardURL() string {
 	return config.Get().WebDashboardURL
 }
+
+// SessionInfo tells the frontend what display-server limitations apply
+// to the current session so it can surface an honest banner to the
+// user. The platform-specific detection lives in session_*.go files.
+type SessionInfo struct {
+	// Platform: "windows", "darwin", "linux".
+	Platform string `json:"platform"`
+	// SessionType: "x11", "wayland", "native", or "unknown". Only
+	// meaningful on Linux; other platforms report "native".
+	SessionType string `json:"sessionType"`
+	// CanTrackWindows: true if per-app activity breakdown works with
+	// full fidelity. False on Wayland-without-XWayland, where the
+	// compositor does not expose focus to non-privileged apps.
+	CanTrackWindows bool `json:"canTrackWindows"`
+	// LimitationMessage: user-facing explanation of any reduced
+	// tracking capability, or "" if everything works. The frontend
+	// shows this as a dismissible banner on first sign-in.
+	LimitationMessage string `json:"limitationMessage"`
+}
+
+// GetSessionInfo reports display-server capabilities so the UI can
+// warn Wayland users that per-app tracking is limited by the
+// compositor's security model, not by our code.
+func (a *App) GetSessionInfo() *SessionInfo {
+	return detectSessionInfo()
+}

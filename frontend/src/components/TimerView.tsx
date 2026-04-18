@@ -5,6 +5,7 @@ import type {
   AttendanceSession,
   StartTimerData,
   UpdateInfo,
+  SessionInfo,
 } from "../app";
 import { Timer, formatDuration } from "./Timer";
 import { TaskSelector } from "./TaskSelector";
@@ -20,6 +21,11 @@ interface TimerViewProps {
 // Module-level variable to persist optimistic timestamp across re-renders and polling
 let _optimisticSignInAt: string | null = null;
 
+// localStorage key for the Wayland-limitation banner dismissal. Kept
+// in module scope so multiple TimerView mounts (e.g. fast-refresh) all
+// agree on whether the user already dismissed it this device.
+const SESSION_BANNER_DISMISSED_KEY = "sessionBannerDismissed";
+
 export function TimerView({ user, onLogout }: TimerViewProps) {
   const [attendance, setAttendance] = useState<Attendance | null>(null);
   const [loading, setLoading] = useState(false);
@@ -27,6 +33,11 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
   // Dashboard URL is resolved from the Go config (ldflags-injected per
   // build variant) instead of a hard-coded prod URL. See M-FE-3.
   const [dashboardURL, setDashboardURL] = useState("");
+  // sessionBanner shows a one-time banner when the OS display server
+  // imposes tracking limits (primarily: GNOME Wayland on Ubuntu 24.04,
+  // where the compositor hides per-app focus from non-privileged apps).
+  // Dismissed state persists in localStorage.
+  const [sessionBanner, setSessionBanner] = useState("");
   // tickCount drives per-second re-renders of the active timer display.
   // Readable (not the discarded `[, tick]` placeholder) so useMemo can
   // depend on it directly instead of on Date.now(). See H-FE-1.
@@ -38,6 +49,12 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
     const i = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(i);
   }, [isActive]);
+
+  function dismissSessionBanner() {
+    const sessionType = (window as any)._sessionType || "unknown";
+    localStorage.setItem(SESSION_BANNER_DISMISSED_KEY, sessionType);
+    setSessionBanner("");
+  }
 
   // Patch attendance with the optimistic timestamp so polling doesn't
   // reset the timer.
@@ -83,6 +100,21 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
       .catch(() => {});
     window.go.main.App.GetWebDashboardURL()
       .then((u: string) => setDashboardURL(u))
+      .catch(() => {});
+    // Session capability probe — surfaces Wayland's per-app tracking
+    // limit with an actionable message instead of letting the user
+    // wonder why their activity report says "Desktop" for everything.
+    window.go.main.App.GetSessionInfo()
+      .then((s: SessionInfo) => {
+        if (!s.limitationMessage) return;
+        if (localStorage.getItem(SESSION_BANNER_DISMISSED_KEY) === s.sessionType) return;
+        setSessionBanner(s.limitationMessage);
+        // Store the current session type on the module so dismiss can
+        // scope its record by session type. Prevents a previously-
+        // dismissed Wayland banner from hiding a fresh unknown-session
+        // warning on the next boot.
+        (window as any)._sessionType = s.sessionType;
+      })
       .catch(() => {});
     window.runtime.EventsOn("attendance:updated", (d: Attendance | null) =>
       setAttendance(patchAttendance(d ?? null))
@@ -191,10 +223,11 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
     const cur = attendance.currentTask;
     const curSess = sessions.find((s) => !s.signOutAt);
     return (
-      <Shell user={user} onLogout={onLogout}
+      <Shell user={user} onLogout={onLogout} dashboardURL={dashboardURL}
         bottom={
           <>
             <ErrorBar error={error} />
+            <SessionBanner message={sessionBanner} onDismiss={dismissSessionBanner} />
             <div class="px-3 py-2.5" style={{ borderTop: "1px solid var(--color-border)", background: "var(--color-surface)" }}>
               <p class="text-[10px] font-bold uppercase tracking-widest mb-1.5" style={{ color: "var(--color-text-muted)" }}>
                 Switch Task
@@ -257,10 +290,11 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
 
   /* ═══ STOPPED ═══ */
   return (
-    <Shell user={user} onLogout={onLogout}
+    <Shell user={user} onLogout={onLogout} dashboardURL={dashboardURL}
       bottom={
         <>
           <ErrorBar error={error} />
+          <SessionBanner message={sessionBanner} onDismiss={dismissSessionBanner} />
           <div class="px-3 py-2.5" style={{ borderTop: "1px solid var(--color-border)", background: "var(--color-surface)" }}>
             <TaskSelector onStart={handleStart} loading={loading} />
           </div>
@@ -290,7 +324,7 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
 
 /* ════════════════ Shell ════════════════ */
 
-function Shell({ user, onLogout, children, bottom }: { user: User; onLogout: () => void; children: any; bottom?: any }) {
+function Shell({ user, onLogout, children, bottom, dashboardURL }: { user: User; onLogout: () => void; children: any; bottom?: any; dashboardURL?: string }) {
   const { isDark, toggle } = useTheme();
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [updating, setUpdating] = useState(false);
@@ -462,6 +496,22 @@ function ErrorBar({ error }: { error: string }) {
   return (
     <div class="mx-3 mb-2 text-[11px] p-2 rounded-xl" style={{ background: "var(--color-danger-bg)", border: "1px solid var(--color-danger-border)", color: "var(--color-danger)" }}>
       {error}
+    </div>
+  );
+}
+
+// SessionBanner surfaces OS display-server limitations (Wayland per-app
+// tracking, non-systemd session, etc.) that aren't errors but which the
+// user should know about. Dismissal persists per session-type, so a
+// Wayland user who re-logs into X11 will see the X11 (empty) banner
+// path, not a stale dismissal from Wayland.
+function SessionBanner({ message, onDismiss }: { message: string; onDismiss: () => void }) {
+  if (!message) return null;
+  return (
+    <div class="mx-3 mb-2 text-[11px] p-2 rounded-xl flex items-start gap-2"
+      style={{ background: "var(--color-warning-bg, rgba(234, 179, 8, 0.1))", border: "1px solid var(--color-warning-border, rgba(234, 179, 8, 0.3))", color: "var(--color-warning, rgb(161, 98, 7))" }}>
+      <span class="flex-1">{message}</span>
+      <button onClick={onDismiss} class="opacity-60 hover:opacity-100" aria-label="Dismiss">×</button>
     </div>
   );
 }

@@ -21,6 +21,7 @@ declare global {
           InstallUpdate(): Promise<void>;
           GetAppVersion(): Promise<string>;
           GetWebDashboardURL(): Promise<string>;
+          GetSessionInfo(): Promise<SessionInfo>;
         };
       };
     };
@@ -37,6 +38,13 @@ export interface LoginResult {
   userId?: string;
   email?: string;
   name?: string;
+}
+
+export interface SessionInfo {
+  platform: "windows" | "darwin" | "linux";
+  sessionType: "x11" | "wayland" | "native" | "unknown";
+  canTrackWindows: boolean;
+  limitationMessage: string;
 }
 
 export interface StartTimerData {
