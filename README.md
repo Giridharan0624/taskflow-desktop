@@ -66,24 +66,38 @@ GitHub Actions       — CI/CD for all 3 platforms
 - Wails CLI (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`)
 - NSIS (Windows installer only)
 
-**Linux dev packages.** `webkit2gtk` was split across Ubuntu versions:
+**Linux dev packages.** Only CGO build-time deps are required. Activity
+monitoring speaks X11 directly via `jezek/xgb` and notifications go over
+D-Bus, so there are **no runtime subprocess dependencies** — `xdotool`,
+`xprintidle`, and `libnotify-bin` are no longer needed.
 
 ```bash
 # Ubuntu 24.04 (Noble) and later — only ships webkit2gtk 4.1
 sudo apt update
 sudo apt install -y gcc pkg-config libgtk-3-dev \
-  libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
-  libx11-dev libxtst-dev libxkbcommon-dev libxcb-xkb-dev
+  libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
 
 # Ubuntu 22.04 / Debian 12 — ships webkit2gtk 4.0
 sudo apt install -y gcc pkg-config libgtk-3-dev \
-  libwebkit2gtk-4.0-dev libayatana-appindicator3-dev \
-  libx11-dev libxtst-dev libxkbcommon-dev libxcb-xkb-dev
+  libwebkit2gtk-4.0-dev libayatana-appindicator3-dev
+
+# Fedora 39+
+sudo dnf install -y gcc pkgconf-pkg-config gtk3-devel \
+  webkit2gtk4.1-devel libayatana-appindicator-gtk3-devel
+
+# Arch Linux / Manjaro
+sudo pacman -S --needed base-devel gtk3 webkit2gtk libayatana-appindicator
 ```
 
-Wails v2.9+ auto-detects whichever variant you installed. If you see a
-`webkit2gtk not found` build error on Ubuntu 24.04, force 4.1 with
+Wails v2.9+ auto-detects whichever webkit2gtk variant you installed. If
+you see `webkit2gtk not found` on Ubuntu 24.04, force 4.1 with
 `wails build -tags webkit2_41` (or `wails dev -tags webkit2_41`).
+
+**Runtime.** The built binary only needs a running X11 server (native or
+XWayland) and a D-Bus session bus — both present on every mainstream
+desktop Linux out of the box. If there's no X display (headless, SSH
+without `-X`), activity monitoring silently disables itself and the rest
+of the app continues to work.
 
 ### Development
 

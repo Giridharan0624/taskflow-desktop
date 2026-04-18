@@ -8,13 +8,21 @@ import (
 	"os/exec"
 	"sync"
 
+	"github.com/godbus/dbus/v5"
+
 	"taskflow-desktop/internal/config"
 	"taskflow-desktop/internal/state"
 )
 
 // Manager manages the system tray icon on Linux.
-// Uses notify-send for notifications and a background goroutine for state.
-// Full D-Bus StatusNotifierItem implementation can be added for richer tray support.
+//
+// Notifications previously shelled out to `notify-send`, which required
+// the libnotify-bin package (libnotify on Fedora, libnotify on Arch)
+// installed separately by every user. We now speak the
+// org.freedesktop.Notifications D-Bus service directly — that's the
+// same service notify-send delegates to, so users see the exact same
+// notification bubble from their notification daemon (mako, dunst,
+// gnome-shell, plasma, etc.) with zero extra packages.
 //
 // stopCh is closed by Stop and selected on by Start. Without a dedicated
 // stop channel, Stop just flipped m.running=false and the goroutine
@@ -28,6 +36,13 @@ type Manager struct {
 	timerActive bool
 	statusText  string
 	stopCh      chan struct{}
+
+	// notifyOnce guards lazy connection to the session bus. A session
+	// without D-Bus running (rare — typically headless) leaves
+	// notifyObj nil and ShowBalloon degrades to a log line, matching
+	// the old "notify-send not installed" failure mode.
+	notifyOnce sync.Once
+	notifyObj  dbus.BusObject
 }
 
 func NewManager(appState *state.AppState) *Manager {
@@ -86,7 +101,32 @@ func (m *Manager) Stop() {
 	}
 }
 
-// ShowBalloon displays a desktop notification using notify-send.
+// notifier returns the cached D-Bus proxy for
+// org.freedesktop.Notifications, or nil if the session bus is
+// unavailable. Callers must tolerate nil.
+func (m *Manager) notifier() dbus.BusObject {
+	m.notifyOnce.Do(func() {
+		conn, err := dbus.SessionBus()
+		if err != nil {
+			log.Printf("tray: no D-Bus session bus (%v) — notifications disabled", err)
+			return
+		}
+		m.notifyObj = conn.Object(
+			"org.freedesktop.Notifications",
+			dbus.ObjectPath("/org/freedesktop/Notifications"),
+		)
+	})
+	return m.notifyObj
+}
+
+// ShowBalloon displays a desktop notification via the
+// org.freedesktop.Notifications D-Bus service — the same service every
+// Linux notification daemon (dunst, mako, gnome-shell, plasma, xfce4-
+// notifyd) implements. This is what notify-send does internally.
+//
+// If the session bus isn't reachable we log the message and return —
+// same degrade-to-log contract the old exec("notify-send") had when
+// libnotify-bin was missing.
 func (m *Manager) ShowBalloon(title, message string) {
 	if !m.running {
 		log.Println("ShowBalloon skipped: tray not running")
@@ -94,12 +134,29 @@ func (m *Manager) ShowBalloon(title, message string) {
 	}
 	log.Printf("ShowBalloon: %s — %s", title, message)
 
-	// notify-send is available on most Linux desktops (GNOME, KDE, XFCE)
-	exec.Command("notify-send", title, message,
-		"-t", "5000",                  // 5 second timeout
-		"-a", "TaskFlow Desktop",      // app name
-		"-i", "appointment-soon",      // icon
-	).Start()
+	n := m.notifier()
+	if n == nil {
+		return
+	}
+
+	// Notify method signature (org.freedesktop.Notifications):
+	//   app_name (s), replaces_id (u), app_icon (s), summary (s),
+	//   body (s), actions (as), hints (a{sv}), expire_timeout (i)
+	// See https://specifications.freedesktop.org/notification-spec/latest/
+	call := n.Call(
+		"org.freedesktop.Notifications.Notify", 0,
+		"TaskFlow Desktop",
+		uint32(0),
+		"appointment-soon",
+		title,
+		message,
+		[]string{},
+		map[string]dbus.Variant{},
+		int32(5000),
+	)
+	if call.Err != nil {
+		log.Printf("tray: notify failed: %v", call.Err)
+	}
 }
 
 // SetTimerActive updates tray state based on timer status.
@@ -114,9 +171,14 @@ func (m *Manager) SetTimerActive(active bool, task *state.CurrentTask) {
 	m.mu.Unlock()
 }
 
-// openBrowser opens a URL in the default browser.
+// openBrowser opens a URL in the default browser. xdg-open is the
+// XDG-standard entry point every major desktop (GNOME, KDE, XFCE, etc.)
+// installs by default — replacing it would mean reimplementing mimeapps.
+// list resolution, which is well out of scope here.
 func openBrowser(url string) {
-	exec.Command("xdg-open", url).Start()
+	if err := exec.Command("xdg-open", url).Start(); err != nil {
+		log.Printf("tray: xdg-open failed: %v", err)
+	}
 }
 
 // OpenDashboard opens the web dashboard in the default browser.

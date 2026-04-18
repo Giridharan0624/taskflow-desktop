@@ -3,24 +3,26 @@
 package monitor
 
 import (
-	"os/exec"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 )
 
-// InputTracker tracks keyboard and mouse activity on Linux.
-// Uses xdotool for mouse position polling. Keyboard counting uses the
-// idle-time heuristic (if the desktop reports <2s of idle, something
-// was pressed).
+// InputTracker counts keyboard and mouse activity on Linux.
 //
-// idle is cached as a struct field instead of being allocated each
-// GetCounts tick. Previously NewIdleDetector() forked xprintidle twice
-// per second (once here, once in trackActivity), burning CPU on every
-// poll and — on Wayland-without-xprintidle sessions — permanently
-// reading "0 idle" which made every tick count a false keyboard press.
-// See H-MON-2.
+// Mouse: previously shelled out to `xdotool getmouselocation --shell`
+// every tick. We now call XQueryPointer directly on the shared X
+// connection — same cursor coordinates, no process spawn.
+//
+// Keyboard: X11 has no portable per-key hook without global grabs, so
+// we keep the idle-time heuristic — if the desktop reports <2s since
+// last input, the user touched *something*. This is identical to the
+// previous behavior; only the data source underneath (now MIT-SCREEN-
+// SAVER via x11_linux.go) changed.
+//
+// idle is cached as a struct field instead of being allocated per
+// GetCounts tick. That matters because NewIdleDetector() used to fork
+// xprintidle — doing it per tick burned CPU and produced false
+// keyboard presses when xprintidle was missing. See H-MON-2.
 type InputTracker struct {
 	keyboardTotal atomic.Uint32
 	mouseTotal    atomic.Uint32
@@ -35,12 +37,9 @@ func NewInputTracker() *InputTracker {
 	t := &InputTracker{
 		idle: NewIdleDetector(),
 	}
-
-	// Initialize cursor position
-	x, y := getMousePos()
+	x, y := getX11().getMousePos()
 	t.lastCursorX = x
 	t.lastCursorY = y
-
 	return t
 }
 
@@ -49,18 +48,13 @@ func (t *InputTracker) GetCounts() (keyboard uint32, mouse uint32) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Mouse: detect cursor movement via xdotool
-	x, y := getMousePos()
+	x, y := getX11().getMousePos()
 	if x != t.lastCursorX || y != t.lastCursorY {
 		t.mouseTotal.Add(1)
 		t.lastCursorX = x
 		t.lastCursorY = y
 	}
 
-	// Keyboard: xdotool doesn't expose key events without global hooks,
-	// so we fall back to the idle-time heuristic. Reusing t.idle (rather
-	// than allocating per tick) avoids forking xprintidle twice per
-	// second.
 	if t.idle != nil {
 		if idleSec := t.idle.GetIdleSeconds(); idleSec < 2 {
 			t.keyboardTotal.Add(1)
@@ -68,21 +62,4 @@ func (t *InputTracker) GetCounts() (keyboard uint32, mouse uint32) {
 	}
 
 	return t.keyboardTotal.Load(), t.mouseTotal.Load()
-}
-
-// getMousePos returns the current cursor position using xdotool.
-func getMousePos() (x, y int) {
-	out, err := exec.Command("xdotool", "getmouselocation", "--shell").Output()
-	if err != nil {
-		return 0, 0
-	}
-
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.HasPrefix(line, "X=") {
-			x, _ = strconv.Atoi(strings.TrimPrefix(line, "X="))
-		} else if strings.HasPrefix(line, "Y=") {
-			y, _ = strconv.Atoi(strings.TrimPrefix(line, "Y="))
-		}
-	}
-	return x, y
 }

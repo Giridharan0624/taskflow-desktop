@@ -30,12 +30,15 @@ jobs:
 
       # Linux-only build deps. The lint job doesn't run wails build but
       # `go vet` needs to compile packages that import CGO-heavy libs
-      # (GTK/webkit for Wails, libayatana for systray).
+      # (GTK/webkit for Wails, libayatana for systray). xdotool /
+      # xprintidle are no longer installed here — activity monitoring
+      # now speaks X11 directly via jezek/xgb, so there are no runtime
+      # subprocess dependencies on Linux.
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc libgtk-3-dev libwebkit2gtk-4.0-dev \
-            libayatana-appindicator3-dev xdotool xprintidle
+            libayatana-appindicator3-dev
 
       - name: go vet
         run: go vet ./...
