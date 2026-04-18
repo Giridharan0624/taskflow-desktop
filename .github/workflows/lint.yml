@@ -1,0 +1,95 @@
+name: Lint & Test Desktop
+
+# Hardening pass from Bug-Report-Go.md §2. Runs the cheap static analyses
+# (vet, staticcheck, errcheck) and the race-aware test suite before any
+# build job. These catch the same classes of bugs that drove the initial
+# audit (unsynchronised state, ignored errors, goroutine leaks) at PR time
+# instead of in production.
+
+on:
+  push:
+    branches: [main, feature/cross-platform, saas-migration]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+          cache-dependency-path: desktop/go.sum
+
+      # Linux-only build deps. The lint job doesn't run wails build but
+      # `go vet` needs to compile packages that import CGO-heavy libs
+      # (GTK/webkit for Wails, libayatana for systray).
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc libgtk-3-dev libwebkit2gtk-4.0-dev \
+            libayatana-appindicator3-dev xdotool xprintidle
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Install staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@latest
+
+      - name: staticcheck
+        run: staticcheck ./...
+
+      - name: Install errcheck
+        run: go install github.com/kisielk/errcheck@latest
+
+      # errcheck catches ignored error returns (e.g. the pre-fix Logout
+      # silently swallowing keyring delete errors — H-AUTH-3).
+      - name: errcheck
+        run: errcheck ./...
+
+      # -race surfaces data races that compile clean but break in prod.
+      # -count=1 disables test-result caching so this re-runs every push.
+      - name: go test -race
+        run: go test -race -count=1 ./...
+
+  cross-compile:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+          cache-dependency-path: desktop/go.sum
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc libgtk-3-dev libwebkit2gtk-4.0-dev \
+            libayatana-appindicator3-dev
+
+      # Catches platform-parity regressions (e.g. a function missing on
+      # one OS — P-7 in the audit) without standing up macOS/Windows
+      # runners. Darwin omitted because it needs CGO on a mac runner.
+      - name: Cross-compile windows/amd64
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: go build ./...
+
+      - name: Cross-compile linux/amd64
+        env:
+          GOOS: linux
+          GOARCH: amd64
+        run: go build ./...

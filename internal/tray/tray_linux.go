@@ -15,6 +15,11 @@ import (
 // Manager manages the system tray icon on Linux.
 // Uses notify-send for notifications and a background goroutine for state.
 // Full D-Bus StatusNotifierItem implementation can be added for richer tray support.
+//
+// stopCh is closed by Stop and selected on by Start. Without a dedicated
+// stop channel, Stop just flipped m.running=false and the goroutine
+// blocked on <-done (the app-lifetime channel) would leak if the app
+// wanted to restart the tray without exiting. See H-TRAY-2.
 type Manager struct {
 	mu          sync.Mutex
 	appState    *state.AppState
@@ -22,6 +27,7 @@ type Manager struct {
 	running     bool
 	timerActive bool
 	statusText  string
+	stopCh      chan struct{}
 }
 
 func NewManager(appState *state.AppState) *Manager {
@@ -36,7 +42,9 @@ func (m *Manager) SetHandler(h *ActionHandler) {
 }
 
 // Start runs the tray manager. On Linux, there's no message loop needed
-// like Win32 — we just mark as running and block until done.
+// like Win32 — we just mark as running and block until the first of:
+//   - the app-lifetime done channel closes (shutdown)
+//   - Stop is called (closes stopCh)
 func (m *Manager) Start(done <-chan struct{}) {
 	m.mu.Lock()
 	if m.running {
@@ -44,23 +52,38 @@ func (m *Manager) Start(done <-chan struct{}) {
 		return
 	}
 	m.running = true
+	m.stopCh = make(chan struct{})
+	stopCh := m.stopCh
 	m.mu.Unlock()
 
 	log.Println("System tray started (Linux)")
 
-	// Block until shutdown signal
-	<-done
+	select {
+	case <-done:
+	case <-stopCh:
+	}
 
 	m.mu.Lock()
 	m.running = false
+	m.stopCh = nil
 	m.mu.Unlock()
 	log.Println("System tray stopped (Linux)")
 }
 
+// Stop signals the tray goroutine to exit. Safe to call from any
+// goroutine and idempotent.
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.running = false
+	if !m.running || m.stopCh == nil {
+		return
+	}
+	select {
+	case <-m.stopCh:
+		// already closed
+	default:
+		close(m.stopCh)
+	}
 }
 
 // ShowBalloon displays a desktop notification using notify-send.

@@ -22,6 +22,12 @@ var (
 	procLocalFree          = kernel32ForCrypto.NewProc("LocalFree")
 )
 
+// CRYPTPROTECT_UI_FORBIDDEN tells DPAPI to fail rather than pop a modal
+// prompt when it would otherwise ask the user to confirm. Token
+// encrypt/decrypt runs from background goroutines at startup and during
+// token refresh — a modal there would deadlock the app. See M-AUTH-2.
+const cryptprotectUIForbidden uintptr = 0x1
+
 // DATA_BLOB is the Windows DPAPI data structure.
 type dataBlob struct {
 	cbData uint32
@@ -56,7 +62,7 @@ func encryptDPAPI(plaintext string) (string, error) {
 		0, // no additional entropy
 		0, // reserved
 		0, // no prompt
-		0, // flags
+		cryptprotectUIForbidden,
 		uintptr(unsafe.Pointer(&output)),
 	)
 	if ret == 0 {
@@ -84,7 +90,7 @@ func decryptDPAPI(encoded string) (string, error) {
 		0, // no additional entropy
 		0, // reserved
 		0, // no prompt
-		0, // flags
+		cryptprotectUIForbidden,
 		uintptr(unsafe.Pointer(&output)),
 	)
 	if ret == 0 {

@@ -100,6 +100,18 @@ func NewClient(authService *auth.Service, appState *state.AppState) *Client {
 	client := resty.NewWithClient(&http.Client{
 		Transport: transport,
 		Timeout:   30 * time.Second,
+		// Enforce HTTPS on redirect targets too. The HasPrefix check above
+		// only validates the original APIURL — without CheckRedirect the
+		// default Go client will happily follow a 302 to http://. See M-API-3.
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if req.URL.Scheme != "https" {
+				return fmt.Errorf("refusing non-https redirect to %q", req.URL.String())
+			}
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		},
 	}).
 		SetBaseURL(cfg.APIURL).
 		SetHeader("Content-Type", "application/json")

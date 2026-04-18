@@ -3,16 +3,47 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
 )
 
+// singleInstanceLock holds the exclusive flock for the process lifetime.
+// Keeping the *os.File at package scope prevents GC from closing the
+// file and dropping the lock. See C-CORE-3.
+var singleInstanceLock *os.File
+
+// ensureSingleInstance takes an advisory exclusive flock on a lockfile
+// in ~/Library/Application Support. NSApplication's "single-instance
+// for bundle launches" guarantee doesn't cover binaries launched from
+// the shell (wails dev, CLI-invoked .app), so we need this regardless.
+// See C-CORE-3 / T-PLATFORM-1.
 func ensureSingleInstance() {
-	// macOS apps are single-instance by default via NSApplication
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	lockDir := filepath.Join(home, "Library", "Application Support", "TaskFlow")
+	if err := os.MkdirAll(lockDir, 0700); err != nil {
+		return
+	}
+	lockPath := filepath.Join(lockDir, "app.lock")
+
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		fmt.Fprintln(os.Stderr, "TaskFlow Desktop is already running.")
+		_ = f.Close()
+		os.Exit(0)
+	}
+	singleInstanceLock = f
 }
 
 func setupLogging() {

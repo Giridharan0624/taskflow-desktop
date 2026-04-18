@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 
@@ -77,9 +78,17 @@ const (
 	WM_CLOSE         = 0x0010
 	WM_APP           = 0x8000
 	WM_TRAY_CALLBACK = WM_APP + 1
-	WM_COMMAND       = 0x0111
-	WM_RBUTTONUP     = 0x0205
-	WM_LBUTTONDBLCLK = 0x0203
+	// WM_APP_SHOW_BALLOON and WM_APP_SET_TIMER are custom codes posted
+	// from arbitrary goroutines into the tray window's message queue,
+	// so that the actual Shell_NotifyIcon call runs on the window-
+	// owning thread (C-TRAY-1, C-TRAY-2). Win32 nominally requires
+	// Shell_NotifyIcon to be called from the thread that created the
+	// window; violating this produces silent races in practice.
+	WM_APP_SHOW_BALLOON = WM_APP + 2
+	WM_APP_SET_TIMER    = WM_APP + 3
+	WM_COMMAND          = 0x0111
+	WM_RBUTTONUP        = 0x0205
+	WM_LBUTTONDBLCLK    = 0x0203
 
 	TPM_BOTTOMALIGN = 0x0020
 	TPM_LEFTALIGN   = 0x0000
@@ -155,6 +164,13 @@ type RECT struct {
 }
 
 // Manager manages the system tray icon.
+//
+// All mutations to nid, timerActive, statusText, and pendingBalloon go
+// through mu. SetTimerActive and ShowBalloon are called from arbitrary
+// goroutines (activity monitor, Wails IPC bindings), but the actual
+// Shell_NotifyIcon calls must happen on the window-owning thread —
+// that's why both of those methods stash their intent under mu and
+// post a WM_APP code to the message loop. See C-TRAY-1, C-TRAY-2.
 type Manager struct {
 	mu          sync.Mutex
 	appState    *state.AppState
@@ -166,6 +182,17 @@ type Manager struct {
 	statusText  string
 	baseIcon    uintptr // Original app icon
 	activeIcon  uintptr // Icon with green recording dot
+
+	// pendingBalloon is set by ShowBalloon and consumed by the
+	// WM_APP_SHOW_BALLOON handler inside trayWndProc. The handler
+	// runs on the window-owning thread, so Shell_NotifyIcon is always
+	// called from the correct thread (C-TRAY-2).
+	pendingBalloon *pendingBalloonData
+}
+
+type pendingBalloonData struct {
+	title   string
+	message string
 }
 
 // NewManager creates a new tray manager.
@@ -181,8 +208,12 @@ func (m *Manager) SetHandler(h *ActionHandler) {
 	m.handler = h
 }
 
-// global reference so the window proc callback can access the manager
-var globalManager *Manager
+// globalManager lets the package-level trayWndProc callback reach the
+// owning Manager instance. atomic.Pointer because Start writes it from
+// whatever goroutine launched the tray while the Win32 callback thread
+// reads it for every message dispatch — plain *Manager would be a
+// data race the race detector flags immediately (H-TRAY-3).
+var globalManager atomic.Pointer[Manager]
 
 // Start initializes the system tray. Must be called from a goroutine.
 func (m *Manager) Start(done <-chan struct{}) {
@@ -192,7 +223,7 @@ func (m *Manager) Start(done <-chan struct{}) {
 		return
 	}
 	m.running = true
-	globalManager = m
+	globalManager.Store(m)
 	m.mu.Unlock()
 
 	// Register window class
@@ -288,12 +319,40 @@ func (m *Manager) Stop() {
 }
 
 // ShowBalloon displays a Windows notification balloon from the tray icon.
+//
+// Thread-safety (C-TRAY-2): Shell_NotifyIcon nominally requires the
+// calling thread to be the one that created the tray window. This
+// method is called from arbitrary goroutines (activity monitor during
+// screenshots, auth flow, etc.), so we stash the pending balloon under
+// m.mu and post a WM_APP_SHOW_BALLOON message; trayWndProc then calls
+// Shell_NotifyIcon on the correct thread via handleShowBalloon.
 func (m *Manager) ShowBalloon(title, message string) {
-	if !m.running {
+	m.mu.Lock()
+	if !m.running || m.hwnd == 0 {
+		m.mu.Unlock()
 		log.Println("ShowBalloon skipped: tray not running")
 		return
 	}
+	m.pendingBalloon = &pendingBalloonData{title: title, message: message}
+	hwnd := m.hwnd
+	m.mu.Unlock()
+
 	log.Printf("ShowBalloon: %s - %s", title, message)
+	pPostMessage.Call(hwnd, WM_APP_SHOW_BALLOON, 0, 0)
+}
+
+// handleShowBalloon runs on the window-owning thread (invoked from
+// trayWndProc when it dispatches WM_APP_SHOW_BALLOON). Holds m.mu
+// through the entire NOTIFYICONDATAW mutation and the Shell_NotifyIcon
+// call so the Win32 struct is never observed half-written.
+func (m *Manager) handleShowBalloon() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.running || m.pendingBalloon == nil {
+		return
+	}
+	bal := m.pendingBalloon
+	m.pendingBalloon = nil
 
 	// Clear previous balloon text first
 	for i := range m.nid.SzInfoTitle {
@@ -303,8 +362,8 @@ func (m *Manager) ShowBalloon(title, message string) {
 		m.nid.SzInfo[i] = 0
 	}
 
-	copy(m.nid.SzInfoTitle[:], utf16(title))
-	copy(m.nid.SzInfo[:], utf16(message))
+	copy(m.nid.SzInfoTitle[:], utf16(bal.title))
+	copy(m.nid.SzInfo[:], utf16(bal.message))
 	m.nid.DwInfoFlags = 0x00000001 // NIIF_INFO
 	// NIF_INFO is required for balloon; include NIF_ICON + NIF_TIP to keep icon visible
 	m.nid.UFlags = NIF_INFO | NIF_ICON | NIF_TIP
@@ -313,6 +372,12 @@ func (m *Manager) ShowBalloon(title, message string) {
 }
 
 // SetTimerActive updates the tray icon and tooltip based on timer state.
+//
+// Thread-safety (C-TRAY-1): stashes the requested state under m.mu and
+// posts a WM_APP_SET_TIMER message; handleSetTimer then performs the
+// Win32 struct mutation and Shell_NotifyIcon call on the window-owning
+// thread with m.mu held, so the 4 KB NOTIFYICONDATAW struct is never
+// read by the message loop mid-mutation.
 func (m *Manager) SetTimerActive(active bool, task *state.CurrentTask) {
 	m.mu.Lock()
 	m.timerActive = active
@@ -321,17 +386,37 @@ func (m *Manager) SetTimerActive(active bool, task *state.CurrentTask) {
 	} else {
 		m.statusText = "Timer stopped"
 	}
+	if !m.running || m.hwnd == 0 {
+		m.mu.Unlock()
+		return
+	}
+	hwnd := m.hwnd
 	m.mu.Unlock()
 
-	// Update tooltip
+	pPostMessage.Call(hwnd, WM_APP_SET_TIMER, 0, 0)
+}
+
+// handleSetTimer runs on the window-owning thread. Holds m.mu through
+// the full NOTIFYICONDATAW mutation and the Shell_NotifyIcon call.
+func (m *Manager) handleSetTimer() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.running {
+		return
+	}
+
 	tip := fmt.Sprintf("TaskFlow — %s", m.statusText)
 	if len(tip) > 127 {
 		tip = tip[:127]
 	}
+	// Clear previous tip text before copying to avoid leftover bytes.
+	for i := range m.nid.SzTip {
+		m.nid.SzTip[i] = 0
+	}
 	copy(m.nid.SzTip[:], utf16(tip))
 
 	// Swap icon: green dot when active, normal when stopped
-	if active && m.activeIcon != 0 {
+	if m.timerActive && m.activeIcon != 0 {
 		m.nid.HIcon = m.activeIcon
 	} else if m.baseIcon != 0 {
 		m.nid.HIcon = m.baseIcon
@@ -349,6 +434,10 @@ func trayWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		}
 	}()
 
+	// Load the Manager pointer once per message dispatch. Subsequent
+	// calls during this one dispatch see a consistent view.
+	mgr := globalManager.Load()
+
 	switch msg {
 	case WM_DESTROY:
 		// WM_DESTROY arrives after DefWindowProc(WM_CLOSE) calls
@@ -359,6 +448,25 @@ func trayWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		pPostQuitMessage.Call(0)
 		return 0
 
+	case WM_APP_SHOW_BALLOON:
+		// Delivered from ShowBalloon (any goroutine) so that the actual
+		// Shell_NotifyIcon(NIM_MODIFY) call runs on the window-owning
+		// thread. Without this, Win32 nominally-illegal cross-thread
+		// Shell_NotifyIcon calls produce silent races. See C-TRAY-2.
+		if mgr != nil {
+			mgr.handleShowBalloon()
+		}
+		return 0
+
+	case WM_APP_SET_TIMER:
+		// Delivered from SetTimerActive. Same rationale as the balloon
+		// path — the Shell_NotifyIcon call runs on this thread only.
+		// See C-TRAY-1.
+		if mgr != nil {
+			mgr.handleSetTimer()
+		}
+		return 0
+
 	case WM_TRAY_CALLBACK:
 		// With NOTIFYICON_VERSION_4, the event is in the low word of lParam
 		event := lParam & 0xFFFF
@@ -366,14 +474,14 @@ func trayWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		case WM_RBUTTONUP:
 			showContextMenu(hwnd)
 		case WM_LBUTTONDBLCLK:
-			if globalManager != nil && globalManager.handler != nil && globalManager.handler.OnShowWindow != nil {
+			if mgr != nil && mgr.handler != nil && mgr.handler.OnShowWindow != nil {
 				log.Println("Tray: double-click → ShowWindow")
-				go globalManager.handler.OnShowWindow()
+				go mgr.handler.OnShowWindow()
 			}
 		case 0x0201: // WM_LBUTTONDOWN — single click also shows window
-			if globalManager != nil && globalManager.handler != nil && globalManager.handler.OnShowWindow != nil {
+			if mgr != nil && mgr.handler != nil && mgr.handler.OnShowWindow != nil {
 				log.Println("Tray: single-click → ShowWindow")
-				go globalManager.handler.OnShowWindow()
+				go mgr.handler.OnShowWindow()
 			}
 		}
 		return 0
@@ -382,18 +490,18 @@ func trayWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		id := wParam & 0xFFFF
 		switch id {
 		case IDM_SHOW:
-			if globalManager != nil && globalManager.handler != nil && globalManager.handler.OnShowWindow != nil {
-				go globalManager.handler.OnShowWindow()
+			if mgr != nil && mgr.handler != nil && mgr.handler.OnShowWindow != nil {
+				go mgr.handler.OnShowWindow()
 			}
 		case IDM_STOP:
-			if globalManager != nil && globalManager.handler != nil && globalManager.handler.OnStopTimer != nil {
-				globalManager.handler.OnStopTimer()
+			if mgr != nil && mgr.handler != nil && mgr.handler.OnStopTimer != nil {
+				mgr.handler.OnStopTimer()
 			}
 		case IDM_DASHBOARD:
 			openBrowser(config.Get().WebDashboardURL)
 		case IDM_QUIT:
-			if globalManager != nil && globalManager.handler != nil && globalManager.handler.OnQuit != nil {
-				globalManager.handler.OnQuit()
+			if mgr != nil && mgr.handler != nil && mgr.handler.OnQuit != nil {
+				mgr.handler.OnQuit()
 			}
 		}
 		return 0
@@ -408,11 +516,11 @@ func showContextMenu(hwnd uintptr) {
 
 	// Status line (grayed out — display only)
 	status := "Timer stopped"
-	if globalManager != nil {
-		globalManager.mu.Lock()
-		status = globalManager.statusText
-		isActive := globalManager.timerActive
-		globalManager.mu.Unlock()
+	if mgr := globalManager.Load(); mgr != nil {
+		mgr.mu.Lock()
+		status = mgr.statusText
+		isActive := mgr.timerActive
+		mgr.mu.Unlock()
 
 		appendMenu(hmenu, MF_STRING|MF_GRAYED, IDM_STATUS, status)
 		appendMenu(hmenu, MF_SEPARATOR, 0, "")

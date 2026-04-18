@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -55,12 +56,40 @@ func Get() *Config {
 				panic("Config not available. For production: use build.ps1. For dev: create config.json from config.example.json.")
 			}
 		}
+		// Validate every required field is populated. Previously the gate
+		// above only checked APIURL and CognitoClientID, so a config.json
+		// missing e.g. CognitoPoolID would produce an opaque AWS SDK error
+		// deep inside the Cognito client instead of a clear startup failure.
+		// See M-API-1.
+		if missing := missingFields(cfg); len(missing) > 0 {
+			panic("Config incomplete — missing required fields: " + strings.Join(missing, ", "))
+		}
 		// Only commit to the package-level pointer after the struct is
 		// fully populated — concurrent callers either see the full
 		// config or block in sync.Once, never observe a half-state.
 		loaded = cfg
 	})
 	return loaded
+}
+
+// missingFields returns the names of required Config fields that are empty.
+// WebDashboardURL is intentionally excluded — desktop still runs without it
+// (only the dashboard link button is affected).
+func missingFields(c *Config) []string {
+	var missing []string
+	if c.APIURL == "" {
+		missing = append(missing, "APIURL")
+	}
+	if c.CognitoRegion == "" {
+		missing = append(missing, "CognitoRegion")
+	}
+	if c.CognitoPoolID == "" {
+		missing = append(missing, "CognitoPoolID")
+	}
+	if c.CognitoClientID == "" {
+		missing = append(missing, "CognitoClientID")
+	}
+	return missing
 }
 
 // loadFromFile reads config.json for dev mode only.

@@ -16,6 +16,9 @@ import (
 // Manager manages the menu bar status item on macOS.
 // Uses osascript for notifications. Full NSStatusItem via CGo can be added
 // for a native menu bar icon with dropdown menu.
+//
+// stopCh is closed by Stop and selected on by Start, matching the Linux
+// tray's shape. See H-TRAY-2.
 type Manager struct {
 	mu          sync.Mutex
 	appState    *state.AppState
@@ -23,6 +26,7 @@ type Manager struct {
 	running     bool
 	timerActive bool
 	statusText  string
+	stopCh      chan struct{}
 }
 
 func NewManager(appState *state.AppState) *Manager {
@@ -38,7 +42,8 @@ func (m *Manager) SetHandler(h *ActionHandler) {
 
 // Start runs the tray manager. On macOS, the Wails framework owns the
 // NSApplication main loop, so we don't create our own. We just mark as
-// running and block until done.
+// running and block until the first of the app-lifetime done channel
+// or our own stopCh fires.
 func (m *Manager) Start(done <-chan struct{}) {
 	m.mu.Lock()
 	if m.running {
@@ -46,23 +51,37 @@ func (m *Manager) Start(done <-chan struct{}) {
 		return
 	}
 	m.running = true
+	m.stopCh = make(chan struct{})
+	stopCh := m.stopCh
 	m.mu.Unlock()
 
 	log.Println("System tray started (macOS)")
 
-	// Block until shutdown signal
-	<-done
+	select {
+	case <-done:
+	case <-stopCh:
+	}
 
 	m.mu.Lock()
 	m.running = false
+	m.stopCh = nil
 	m.mu.Unlock()
 	log.Println("System tray stopped (macOS)")
 }
 
+// Stop signals the tray goroutine to exit. Safe to call from any
+// goroutine and idempotent.
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.running = false
+	if !m.running || m.stopCh == nil {
+		return
+	}
+	select {
+	case <-m.stopCh:
+	default:
+		close(m.stopCh)
+	}
 }
 
 // ShowBalloon displays a macOS notification using osascript.

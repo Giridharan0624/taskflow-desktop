@@ -26,6 +26,10 @@ export function LoginForm({ onSuccess }: LoginFormProps) {
     try {
       const result: LoginResult = await window.go.main.App.Login(email, password);
       if (result.requiresNewPassword) { setChallengePending(true); setLoading(false); return; }
+      // Clear password out of state as soon as login succeeds — there
+      // is no legitimate reason to keep a plaintext password around
+      // after it has been accepted. See H-FE-2.
+      setPassword("");
       onSuccess(await window.go.main.App.GetCurrentUser());
     } catch (err: any) {
       setError(friendlyError(err));
@@ -38,6 +42,10 @@ export function LoginForm({ onSuccess }: LoginFormProps) {
     setLoading(true);
     try {
       await window.go.main.App.SetNewPassword(newPassword);
+      // Clear both password fields out of state after the challenge
+      // completes. See H-FE-2.
+      setPassword("");
+      setNewPassword("");
       onSuccess(await window.go.main.App.GetCurrentUser());
     } catch (err: any) {
       setError(friendlyError(err));

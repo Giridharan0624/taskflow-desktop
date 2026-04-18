@@ -23,6 +23,23 @@ func NewScreenshotCapture() *ScreenshotCapture {
 
 // IsScreenLocked checks if the user's session is likely locked.
 // Uses idle time as a heuristic — if idle for over 10 minutes, likely locked.
+//
+// TODO(H-MON-3): this is a two-sided proxy with known failure modes:
+//   - False negative (privacy breach): a locked screen with a mouse
+//     jiggler or auto-moving cursor reads as active and gets captured.
+//   - False positive (lost data): a user reading a long document for
+//     >10 minutes reads as locked and the capture is skipped.
+//
+// Replacing this with native APIs requires platform-specific code:
+//   - Windows: WTSQuerySessionInformation(WTSSessionInfoEx) + check
+//     WTSINFOEX_LEVEL1.SessionFlags for WTS_SESSIONSTATE_LOCK.
+//   - macOS:   CGSessionCopyCurrentDictionary + CGSSessionScreenIsLocked
+//     via cgo.
+//   - Linux:   loginctl / org.freedesktop.login1 D-Bus, LockedHint
+//     property on the current session.
+//
+// Left as-is for now because a half-implemented native check that gets
+// the failure modes wrong is worse than the current proxy.
 func (sc *ScreenshotCapture) IsScreenLocked() bool {
 	idle := NewIdleDetector()
 	return idle.GetIdleSeconds() > 600

@@ -18,8 +18,9 @@ declare global {
           GetCurrentUser(): Promise<User>;
           ShowWindow(): Promise<void>;
           CheckForUpdate(): Promise<UpdateInfo>;
-          InstallUpdate(downloadUrl: string, fileName: string): Promise<void>;
+          InstallUpdate(): Promise<void>;
           GetAppVersion(): Promise<string>;
+          GetWebDashboardURL(): Promise<string>;
         };
       };
     };

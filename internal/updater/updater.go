@@ -121,7 +121,22 @@ func CheckForUpdate() (*UpdateInfo, error) {
 	// Clean version tags (remove "v" prefix)
 	latestVer := strings.TrimPrefix(release.TagName, "v")
 
+	// Skip pre-release and build-metadata tags (e.g. "1.6.0-beta", "1.6.0+rc1").
+	// parseVersion strips these suffixes when comparing, so without this
+	// guard beta tags would be silently treated as equal to the stable
+	// release and auto-delivered to stable users. See M-UPD-1.
+	if strings.ContainsAny(latestVer, "-+") {
+		log.Printf("updater: skipping pre-release tag %q", release.TagName)
+		return &UpdateInfo{Available: false, CurrentVer: CurrentVersion, Version: latestVer}, nil
+	}
+
 	if !isNewer(latestVer, CurrentVersion) {
+		// Log remote-older-than-local as a distinct event so a rollback
+		// attack (attacker republishes an older release) is at least
+		// visible in the log file. See M-UPD-2.
+		if isNewer(CurrentVersion, latestVer) {
+			log.Printf("updater: remote release %q is older than current %q — ignoring", latestVer, CurrentVersion)
+		}
 		return &UpdateInfo{Available: false, CurrentVer: CurrentVersion, Version: latestVer}, nil
 	}
 

@@ -15,6 +15,14 @@ export function Timer({ startTime, class: className }: TimerProps) {
 
   useEffect(() => {
     const start = new Date(startTime).getTime();
+    // If startTime is malformed (e.g. a backend field omitted / not yet
+    // populated), Date.parse returns NaN and we would render "NaN:NaN:NaN".
+    // Skip the interval entirely in that case and let the display fallback
+    // take over. See M-FE-2.
+    if (!Number.isFinite(start)) {
+      setElapsed(NaN);
+      return;
+    }
 
     function tick() {
       const now = Date.now();
@@ -31,15 +39,13 @@ export function Timer({ startTime, class: className }: TimerProps) {
     };
   }, [startTime]);
 
-  const hours = Math.floor(elapsed / 3600);
-  const minutes = Math.floor((elapsed % 3600) / 60);
-  const seconds = elapsed % 60;
-
-  const display = [
-    String(hours).padStart(2, "0"),
-    String(minutes).padStart(2, "0"),
-    String(seconds).padStart(2, "0"),
-  ].join(":");
+  const display = Number.isFinite(elapsed) && elapsed >= 0
+    ? [
+        String(Math.floor(elapsed / 3600)).padStart(2, "0"),
+        String(Math.floor((elapsed % 3600) / 60)).padStart(2, "0"),
+        String(elapsed % 60).padStart(2, "0"),
+      ].join(":")
+    : "--:--:--";
 
   return <span class={className || "timer-display"}>{display}</span>;
 }

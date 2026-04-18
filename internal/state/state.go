@@ -66,11 +66,42 @@ func (s *AppState) SetAuthenticated(v bool) {
 	s.authenticated = v
 }
 
-// GetAttendance returns the current attendance data.
+// GetAttendance returns a deep copy of the current attendance data.
+//
+// The previous implementation leaked the stored pointer past RLock, so
+// callers could mutate the inner struct (or the Sessions slice) without
+// synchronization. Returning a deep copy is the only safe shape: the
+// caller owns the result and can do whatever it likes with it, while
+// SetAttendance writers remain protected by the lock. See H-CORE-4.
 func (s *AppState) GetAttendance() *Attendance {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.attendance
+	if s.attendance == nil {
+		return nil
+	}
+
+	copied := *s.attendance // struct copy — shallow
+
+	// Deep-copy the mutable slice so subsequent append/mutation on the
+	// returned value can't race SetAttendance.
+	if s.attendance.Sessions != nil {
+		copied.Sessions = append([]AttendanceSession(nil), s.attendance.Sessions...)
+	}
+
+	// CurrentSignInAt is *string — each caller gets its own pointer so
+	// setting it to nil on the copy doesn't affect the stored original.
+	if s.attendance.CurrentSignInAt != nil {
+		v := *s.attendance.CurrentSignInAt
+		copied.CurrentSignInAt = &v
+	}
+
+	// CurrentTask is *CurrentTask — deep-copy through one layer.
+	if s.attendance.CurrentTask != nil {
+		taskCopy := *s.attendance.CurrentTask
+		copied.CurrentTask = &taskCopy
+	}
+
+	return &copied
 }
 
 // SetAttendance updates the current attendance data.

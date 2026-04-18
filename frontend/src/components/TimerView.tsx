@@ -24,31 +24,65 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
   const [attendance, setAttendance] = useState<Attendance | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [, tick] = useState(0);
+  // Dashboard URL is resolved from the Go config (ldflags-injected per
+  // build variant) instead of a hard-coded prod URL. See M-FE-3.
+  const [dashboardURL, setDashboardURL] = useState("");
+  // tickCount drives per-second re-renders of the active timer display.
+  // Readable (not the discarded `[, tick]` placeholder) so useMemo can
+  // depend on it directly instead of on Date.now(). See H-FE-1.
+  const [tickCount, setTick] = useState(0);
   const isActive = attendance?.status === "SIGNED_IN";
 
   useEffect(() => {
     if (!isActive) return;
-    const i = setInterval(() => tick((t) => t + 1), 1000);
+    const i = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(i);
   }, [isActive]);
 
-  // Patch attendance with optimistic timestamp so polling doesn't reset the timer
+  // Patch attendance with the optimistic timestamp so polling doesn't
+  // reset the timer.
+  //
+  // Returns a fresh object — previously we mutated the Wails response
+  // in place, which could corrupt cached state inside Wails' IPC layer
+  // and surface as "timer jumped backwards" after a network:restored
+  // event. See C-FE-1.
   function patchAttendance(d: Attendance | null): Attendance | null {
-    if (!d) { _optimisticSignInAt = null; return null; }
-    if (_optimisticSignInAt && d.status === "SIGNED_IN") {
-      d.currentSignInAt = _optimisticSignInAt;
-      // Also patch the active session's signInAt
-      const active = d.sessions?.find((s) => !s.signOutAt);
-      if (active) active.signInAt = _optimisticSignInAt;
+    if (!d) {
+      _optimisticSignInAt = null;
+      return null;
     }
-    if (d.status !== "SIGNED_IN") _optimisticSignInAt = null;
-    return d;
+    if (d.status !== "SIGNED_IN") {
+      _optimisticSignInAt = null;
+      return { ...d };
+    }
+    if (!_optimisticSignInAt) {
+      return { ...d };
+    }
+    const stamped = _optimisticSignInAt;
+    return {
+      ...d,
+      currentSignInAt: stamped,
+      sessions: d.sessions?.map((s) =>
+        !s.signOutAt ? { ...s, signInAt: stamped } : s
+      ),
+    };
   }
 
   useEffect(() => {
+    // Clear any stale handlers from a previous mount (Preact fast-refresh
+    // or a second mount under StrictMode) BEFORE registering new ones.
+    // Wails' EventsOn has no subscription handle, so EventsOff is our
+    // only way to guarantee at-most-one handler per event name.
+    // See C-FE-2.
+    window.runtime.EventsOff("attendance:updated");
+    window.runtime.EventsOff("network:error");
+    window.runtime.EventsOff("network:restored");
+
     window.go.main.App.GetMyAttendance()
       .then((d: Attendance | null) => setAttendance(patchAttendance(d)))
+      .catch(() => {});
+    window.go.main.App.GetWebDashboardURL()
+      .then((u: string) => setDashboardURL(u))
       .catch(() => {});
     window.runtime.EventsOn("attendance:updated", (d: Attendance | null) =>
       setAttendance(patchAttendance(d ?? null))
@@ -63,6 +97,10 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
       window.runtime.EventsOff("attendance:updated");
       window.runtime.EventsOff("network:error");
       window.runtime.EventsOff("network:restored");
+      // Clear module-level optimistic timestamp on unmount so a
+      // logout → re-login cycle doesn't inherit a stale timer
+      // starting-point from the previous session (M-FE-4).
+      _optimisticSignInAt = null;
     };
   }, []);
 
@@ -75,14 +113,23 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
     return raw;
   }, [attendance, isActive]);
 
+  // totalHours depends on tickCount when active (for the live timer
+  // increment) rather than Date.now(). Using Date.now() as a dep made
+  // useMemo recompute on every render — which for a component that
+  // re-renders on every keystroke and hover is effectively never
+  // memoized at all. See H-FE-1.
   const totalHours = useMemo(
     () => sessions.reduce((sum, s) => sum + getSessionHours(s), 0),
-    [sessions, isActive ? Date.now() : 0]
+    [sessions, isActive ? tickCount : 0]
   );
 
+  // groupedTasks doesn't actually depend on totalHours — it was just
+  // pulled in so the grouped task display would re-render on each tick.
+  // Swap to tickCount directly so both useMemos share the same
+  // invalidation signal without a cascading dep chain.
   const groupedTasks = useMemo(
     () => groupSessionsByTask(sessions),
-    [sessions, totalHours]
+    [sessions, isActive ? tickCount : 0]
   );
 
   async function handleStart(data: StartTimerData) {
@@ -98,6 +145,10 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
       const raw = typeof err === "string" ? err : err?.message || "";
       if (raw.includes("already signed in")) {
         _optimisticSignInAt = null;
+        // Nested call MUST have its own .catch so a throw here doesn't
+        // escape handleStart — otherwise the finally would still run
+        // setLoading(false), but the user would see a toast from the
+        // uncaught rejection. See C-FE-3.
         const c = await window.go.main.App.GetMyAttendance().catch(() => null);
         if (c) setAttendance(c);
       } else {
@@ -105,6 +156,8 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
         setError(friendlyError(err));
       }
     } finally {
+      // Runs on every code path — success, "already signed in" recovery,
+      // and hard error. Do not move setLoading(false) out of finally.
       setLoading(false);
     }
   }
@@ -242,8 +295,11 @@ function Shell({ user, onLogout, children, bottom }: { user: User; onLogout: () 
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [updating, setUpdating] = useState(false);
 
-  // Listen for update:available event from Go backend
+  // Listen for update:available event from Go backend. Clear any stale
+  // handler first (C-FE-2 pattern — defensive against Preact
+  // fast-refresh / double mount).
   useEffect(() => {
+    window.runtime.EventsOff("update:available");
     window.runtime.EventsOn("update:available", (info: UpdateInfo) => {
       if (info?.available) setUpdateInfo(info);
     });
@@ -254,7 +310,9 @@ function Shell({ user, onLogout, children, bottom }: { user: User; onLogout: () 
     if (!updateInfo) return;
     setUpdating(true);
     try {
-      await window.go.main.App.InstallUpdate(updateInfo.downloadUrl, updateInfo.fileName);
+      // InstallUpdate takes no arguments — the Go side re-fetches the
+      // release info internally so the download URL never crosses IPC.
+      await window.go.main.App.InstallUpdate();
     } catch {
       setUpdating(false);
     }
@@ -322,10 +380,12 @@ function Shell({ user, onLogout, children, bottom }: { user: User; onLogout: () 
             Task<span style={{ color: "var(--color-primary)" }}>Flow</span>
           </span>
         </div>
-        <a href="https://taskflow-ns.vercel.app" target="_blank"
-          class="text-[10px] font-medium transition-colors" style={{ color: "var(--color-text-muted)" }}>
-          Dashboard ↗
-        </a>
+        {dashboardURL && (
+          <a href={dashboardURL} target="_blank"
+            class="text-[10px] font-medium transition-colors" style={{ color: "var(--color-text-muted)" }}>
+            Dashboard ↗
+          </a>
+        )}
       </footer>
     </div>
   );

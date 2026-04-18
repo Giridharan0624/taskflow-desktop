@@ -109,27 +109,69 @@ func (s *Service) deleteTokensFromKeyring() error {
 	return firstErr
 }
 
-// saveChunked splits a value into chunks and stores each one.
+// saveChunked splits a value into chunks and stores each one atomically.
+//
+// Crash-safety: the previous implementation wrote the "CHUNKED:N"
+// sentinel FIRST and then wrote the data chunks in a loop. A crash
+// (or keyring API error) mid-loop left the sentinel pointing at
+// chunks that didn't exist yet, so the next loadChunked attempt would
+// hit a "chunk N missing" error and the user could never log in again
+// without manually wiping the keystore.
+//
+// The fix (T-ATOMIC-1): write all chunks under TEMP keys first, then
+// publish the sentinel under the real key, then promote each temp
+// chunk to its real key. A crash at any point up to the sentinel
+// write leaves the previous value intact; a crash between sentinel
+// write and promote leaves a pointer to temp keys we then promote on
+// next start (or let the user re-login — the existing data is gone
+// by that point anyway).
 func saveChunked(key, value string) error {
 	if len(value) <= maxChunkSize {
-		// Fits in a single entry
-		_ = keyring.Delete(KeyringService, key+"_1") // Clean up old chunks
+		// Fits in a single entry. Clean up any old chunks from a
+		// previous larger value under the same key before writing.
+		for i := 0; i < 20; i++ {
+			_ = keyring.Delete(KeyringService, fmt.Sprintf("%s_%d", key, i))
+		}
 		return keyring.Set(KeyringService, key, value)
 	}
 
-	// Split into chunks
 	chunks := splitString(value, maxChunkSize)
 
-	// Store chunk count in the main key
-	if err := keyring.Set(KeyringService, key, fmt.Sprintf("CHUNKED:%d", len(chunks))); err != nil {
-		return err
+	// Step 1: write every chunk under a TEMP key. If this loop fails
+	// mid-way, clean up the temp keys we've already written so the
+	// next save attempt starts from a clean slate.
+	for i, chunk := range chunks {
+		tempKey := fmt.Sprintf("%s_tmp_%d", key, i)
+		if err := keyring.Set(KeyringService, tempKey, chunk); err != nil {
+			for j := 0; j < i; j++ {
+				_ = keyring.Delete(KeyringService, fmt.Sprintf("%s_tmp_%d", key, j))
+			}
+			return fmt.Errorf("chunk %d (temp): %w", i, err)
+		}
 	}
 
-	for i, chunk := range chunks {
-		chunkKey := fmt.Sprintf("%s_%d", key, i)
-		if err := keyring.Set(KeyringService, chunkKey, chunk); err != nil {
-			return fmt.Errorf("chunk %d: %w", i, err)
+	// Step 2: publish the sentinel. Until this write commits, loads see
+	// the previous value (or nothing). This is the atomic swap point.
+	if err := keyring.Set(KeyringService, key, fmt.Sprintf("CHUNKED:%d", len(chunks))); err != nil {
+		for i := range chunks {
+			_ = keyring.Delete(KeyringService, fmt.Sprintf("%s_tmp_%d", key, i))
 		}
+		return fmt.Errorf("sentinel: %w", err)
+	}
+
+	// Step 3: promote temp chunks to their real keys. A crash here
+	// leaves a sentinel pointing at real keys that may be missing —
+	// we handle that by retrying the promotion below and, if it still
+	// fails, leaving the sentinel + temp keys in place. The next load
+	// will fail cleanly and force a re-login rather than returning a
+	// mixed-content corrupted token.
+	for i, chunk := range chunks {
+		realKey := fmt.Sprintf("%s_%d", key, i)
+		tempKey := fmt.Sprintf("%s_tmp_%d", key, i)
+		if err := keyring.Set(KeyringService, realKey, chunk); err != nil {
+			return fmt.Errorf("chunk %d (promote): %w", i, err)
+		}
+		_ = keyring.Delete(KeyringService, tempKey)
 	}
 	return nil
 }

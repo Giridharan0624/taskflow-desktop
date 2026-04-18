@@ -14,6 +14,7 @@ import (
 
 	"taskflow-desktop/internal/api"
 	"taskflow-desktop/internal/auth"
+	"taskflow-desktop/internal/config"
 	"taskflow-desktop/internal/monitor"
 	"taskflow-desktop/internal/state"
 	"taskflow-desktop/internal/tray"
@@ -353,8 +354,30 @@ func (a *App) Logout() error {
 	return nil
 }
 
+// errNotAuthenticated is returned from any post-auth binding called
+// while the session is torn down (before login, after logout, after a
+// 401-triggered auth:expired). The frontend should react to this as
+// "the user needs to log in again" rather than treating it as a
+// network failure. See H-CORE-5.
+var errNotAuthenticated = fmt.Errorf("not authenticated")
+
+// requireAuth is the gate every post-auth Wails binding runs through.
+// Before this, a late-arriving call (e.g. a button click handled while
+// the poll loop was mid-logout) would hit AuthService.GetIDToken, get
+// an opaque "not authenticated" error, and leave the UI in a broken
+// state. Now we return a clean sentinel before touching the API client.
+func (a *App) requireAuth() error {
+	if a.State == nil || !a.State.IsAuthenticated() {
+		return errNotAuthenticated
+	}
+	return nil
+}
+
 // SignIn starts a timer on a task. Called from frontend.
 func (a *App) SignIn(data api.StartTimerData) (*api.Attendance, error) {
+	if err := a.requireAuth(); err != nil {
+		return nil, err
+	}
 	// Validate description is present
 	data.Description = strings.TrimSpace(data.Description)
 	if data.Description == "" {
@@ -383,6 +406,9 @@ func (a *App) SignIn(data api.StartTimerData) (*api.Attendance, error) {
 
 // SignOut stops the current timer. Called from frontend.
 func (a *App) SignOut() (*api.Attendance, error) {
+	if err := a.requireAuth(); err != nil {
+		return nil, err
+	}
 	attendance, err := a.APIClient.SignOut()
 	if err != nil {
 		return nil, err
@@ -397,16 +423,25 @@ func (a *App) SignOut() (*api.Attendance, error) {
 
 // GetMyAttendance returns today's attendance. Called from frontend on mount.
 func (a *App) GetMyAttendance() (*api.Attendance, error) {
+	if err := a.requireAuth(); err != nil {
+		return nil, err
+	}
 	return a.APIClient.GetMyAttendance()
 }
 
 // GetMyTasks returns the current user's assigned tasks. Called from frontend.
 func (a *App) GetMyTasks() ([]api.Task, error) {
+	if err := a.requireAuth(); err != nil {
+		return nil, err
+	}
 	return a.APIClient.GetMyTasks()
 }
 
 // GetCurrentUser returns the authenticated user's profile. Called from frontend.
 func (a *App) GetCurrentUser() (*api.User, error) {
+	if err := a.requireAuth(); err != nil {
+		return nil, err
+	}
 	return a.APIClient.GetCurrentUser()
 }
 
@@ -428,17 +463,42 @@ func (a *App) CheckForUpdate() (*updater.UpdateInfo, error) {
 	return updater.CheckForUpdate()
 }
 
-// InstallUpdate downloads and installs the update. Called from frontend.
-// On success, triggers a graceful Wails shutdown so background services and
-// the activity monitor stop cleanly before the installer replaces the binary.
-func (a *App) InstallUpdate(downloadURL, fileName string) error {
-	if err := updater.DownloadAndInstall(&updater.UpdateInfo{
-		Available:   true,
-		DownloadURL: downloadURL,
-		FileName:    fileName,
-	}); err != nil {
+// InstallUpdate downloads and installs the latest available update.
+//
+// Deliberately takes no arguments: the download URL, filename, and
+// checksum URL all stay Go-side. The frontend used to pass downloadURL
+// and fileName back across the IPC boundary, which meant a compromised
+// or XSS-tainted renderer could steer the updater at an arbitrary host.
+// Re-fetching via updater.CheckForUpdate is one extra GitHub API call
+// per install — a non-issue in practice, and the URLs don't cross IPC.
+//
+// On success, joins all background goroutines (session poll + activity
+// monitor) BEFORE triggering Wails shutdown. Without this, the running
+// .exe can still hold file handles (log file, keychain) when NSIS tries
+// to overwrite it, and the installer silently fails. See H-UPD-3.
+func (a *App) InstallUpdate() error {
+	info, err := updater.CheckForUpdate()
+	if err != nil {
+		return fmt.Errorf("update check: %w", err)
+	}
+	if info == nil || !info.Available {
+		return fmt.Errorf("no update available")
+	}
+
+	// Download + SHA-256 verify + launch installer. If this fails we
+	// haven't torn anything down yet, so the user can retry without
+	// having lost their session.
+	if err := updater.DownloadAndInstall(info); err != nil {
 		return err
 	}
+
+	// Installer launched (ShellExecute is fire-and-forget). Drain our
+	// own goroutines so the running .exe releases file handles before
+	// Wails shutdown fires. runtime.Quit will call a.shutdown which is
+	// idempotent — re-stopping these is safe.
+	a.stopBackgroundServices()
+	a.ActivityMonitor.Stop()
+
 	runtime.Quit(a.ctx)
 	return nil
 }
@@ -446,4 +506,11 @@ func (a *App) InstallUpdate(downloadURL, fileName string) error {
 // GetAppVersion returns the current app version.
 func (a *App) GetAppVersion() string {
 	return updater.CurrentVersion
+}
+
+// GetWebDashboardURL returns the configured web dashboard URL so the
+// footer link opens the correct environment (staging vs prod) instead of
+// being hard-coded in the frontend. See M-FE-3.
+func (a *App) GetWebDashboardURL() string {
+	return config.Get().WebDashboardURL
 }

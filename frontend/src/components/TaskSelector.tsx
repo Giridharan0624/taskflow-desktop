@@ -41,12 +41,17 @@ export function TaskSelector({ onStart, loading }: TaskSelectorProps) {
   function handleStartTask(e: Event) {
     e.preventDefault();
     if (!selectedTask) return;
+    // Trim so a whitespace-only description doesn't pass canStartTask
+    // (which uses the raw value) and then fail server-side validation
+    // with an opaque error. See H-FE-3.
+    const trimmed = description.trim();
+    if (!trimmed) return;
     onStart({
       taskId: selectedTask.taskId,
       projectId: selectedTask.projectId,
       taskTitle: selectedTask.title,
       projectName: selectedTask.projectName || "",
-      description,
+      description: trimmed,
     });
     setDescription("");
     setSelectedSource("");
@@ -54,17 +59,20 @@ export function TaskSelector({ onStart, loading }: TaskSelectorProps) {
   }
 
   function handleMeeting() {
+    const trimmed = description.trim();
     onStart({
       taskId: "",
       projectId: "",
       taskTitle: "Meeting",
       projectName: "",
-      description: description || "Meeting",
+      description: trimmed || "Meeting",
     });
     setDescription("");
   }
 
-  const canStartTask = description && selectedTaskId;
+  // canStartTask uses the trimmed description so the "Start" button
+  // correctly disables on whitespace-only input (H-FE-3).
+  const canStartTask = description.trim().length > 0 && selectedTaskId;
 
   return (
     <div class="space-y-2">

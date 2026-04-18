@@ -56,7 +56,13 @@ export function SessionList({
             {!group.isActive && onResume && (
               <button
                 class="text-primary-600 hover:text-primary-700 text-xs font-medium px-2 py-1 rounded hover:bg-primary-50"
-                onClick={() => onResume(group.sessions[0])}
+                onClick={() =>
+                  // Resume the MOST RECENT session for this task — not
+                  // the first one in the list, which is the oldest and
+                  // often has outdated task metadata (old description,
+                  // pre-rename project name, etc.). See H-FE-4.
+                  onResume(group.sessions[group.sessions.length - 1])
+                }
                 title="Resume this task"
               >
                 Resume
