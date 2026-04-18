@@ -96,3 +96,39 @@ jobs:
           GOOS: linux
           GOARCH: amd64
         run: go build ./...
+
+  # ═══ Ubuntu 24.04 smoke build ═══
+  # Separate job because ubuntu-24.04 ships webkit2gtk 4.1 (not 4.0) and
+  # needs the -tags webkit2_41 build flag. Catches two classes of
+  # regression the 22.04 cross-compile above would miss:
+  #   1. CGO symbol mismatches against the 4.1 headers (e.g. a Wails
+  #      update dropping a 4.1-only symbol)
+  #   2. Bugs in session_linux.go's Wayland detection that compile
+  #      fine but break under the GNOME-on-Wayland default of 24.04
+  ubuntu-24-smoke:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+          cache-dependency-path: desktop/go.sum
+
+      - name: Install build dependencies (webkit2gtk 4.1)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc pkg-config libgtk-3-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
+
+      - name: Build internal packages with webkit2_41 tag
+        # The full wails build is done in release.yml on tag pushes.
+        # Here we just want fast feedback on whether the Go packages
+        # compile against 24.04's toolchain + headers.
+        run: go build -tags webkit2_41 ./...
+
+      - name: go vet (webkit2_41)
+        run: go vet -tags webkit2_41 ./...
