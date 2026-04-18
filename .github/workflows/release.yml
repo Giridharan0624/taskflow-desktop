@@ -151,6 +151,119 @@ jobs:
           name: linux-build
           path: TaskFlow-*-x86_64.AppImage
 
+  # ═══ Build Linux .deb (Ubuntu 24.04 / Debian 13+ — webkit2gtk 4.1) ═══
+  # Separate from build-linux on purpose. The AppImage above is built
+  # against webkit2gtk 4.0 on ubuntu-22.04 for max compatibility with
+  # older distros; the .deb is built on ubuntu-24.04 against 4.1 so
+  # users on Ubuntu 24.04 (GNOME Wayland by default) can install with a
+  # single `sudo apt install ./taskflow-desktop_*.deb` and get proper
+  # menu entries, auto-updates via apt, and clean uninstall.
+  build-linux-deb:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install build dependencies (24.04 — webkit2gtk 4.1)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc pkg-config libgtk-3-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            libx11-dev libxtst-dev libxkbcommon-dev libxcb-xkb-dev
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Build Linux binary (webkit2gtk 4.1)
+        run: |
+          PKG="taskflow-desktop/internal/config"
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          LDFLAGS="-X '${PKG}.apiURL=${{ secrets.API_URL }}' \
+            -X '${PKG}.cognitoRegion=${{ secrets.COGNITO_REGION }}' \
+            -X '${PKG}.cognitoPoolID=${{ secrets.COGNITO_POOL_ID }}' \
+            -X '${PKG}.cognitoClientID=${{ secrets.COGNITO_CLIENT_ID }}' \
+            -X '${PKG}.webDashboardURL=${{ secrets.WEB_DASHBOARD_URL }}' \
+            -X 'taskflow-desktop/internal/updater.CurrentVersion=${VERSION}'"
+          wails build -tags webkit2_41 -ldflags "$LDFLAGS"
+
+      - name: Stage .deb tree
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          PKGROOT="deb-root"
+          rm -rf "$PKGROOT"
+          mkdir -p "$PKGROOT/DEBIAN"
+          mkdir -p "$PKGROOT/usr/bin"
+          mkdir -p "$PKGROOT/usr/share/applications"
+          mkdir -p "$PKGROOT/usr/share/icons/hicolor/512x512/apps"
+
+          install -m 0755 build/bin/taskflow-desktop "$PKGROOT/usr/bin/taskflow-desktop"
+          install -m 0644 build/appicon.png "$PKGROOT/usr/share/icons/hicolor/512x512/apps/taskflow-desktop.png"
+
+          # Desktop entry. StartupWMClass must match the window class so
+          # GNOME/KDE correctly group the running window with the launcher
+          # icon instead of showing a second generic entry.
+          cat > "$PKGROOT/usr/share/applications/taskflow-desktop.desktop" <<'DESKTOP'
+          [Desktop Entry]
+          Name=TaskFlow Desktop
+          Exec=taskflow-desktop
+          Icon=taskflow-desktop
+          Type=Application
+          Categories=Office;ProjectManagement;
+          Comment=Time Tracker & Activity Monitor
+          Terminal=false
+          StartupWMClass=taskflow-desktop
+          DESKTOP
+
+          # Installed-size in KiB is required for apt to show progress.
+          INSTALLED_SIZE=$(du -sk --exclude=DEBIAN "$PKGROOT" | cut -f1)
+
+          # Runtime deps: webkit2gtk 4.1 (24.04+), gtk3, appindicator.
+          # We deliberately do NOT declare xdotool / xprintidle /
+          # libnotify-bin — after Phase 1 the app talks X11 and D-Bus
+          # directly, so no runtime subprocess deps remain.
+          cat > "$PKGROOT/DEBIAN/control" <<CONTROL
+          Package: taskflow-desktop
+          Version: ${VERSION}
+          Architecture: amd64
+          Maintainer: NeuroStack <support@neurostack.in>
+          Installed-Size: ${INSTALLED_SIZE}
+          Depends: libwebkit2gtk-4.1-0, libgtk-3-0, libayatana-appindicator3-1, libc6 (>= 2.35)
+          Section: utils
+          Priority: optional
+          Homepage: https://taskflow-ns.vercel.app
+          Description: TaskFlow time tracker and activity monitor
+           Cross-platform desktop client for TaskFlow: starts and stops
+           timers, tracks per-app activity, syncs with the TaskFlow
+           cloud backend, and posts desktop notifications. Supports
+           Ubuntu 24.04 and newer distros shipping webkit2gtk 4.1.
+          CONTROL
+
+      - name: Build .deb
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          # dpkg-deb requires the output path NOT already exist.
+          OUT="taskflow-desktop_${VERSION}_amd64.deb"
+          dpkg-deb --build --root-owner-group deb-root "$OUT"
+          dpkg-deb --info "$OUT"
+          dpkg-deb --contents "$OUT" | head -40
+
+      - name: Upload Linux .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb-build
+          path: taskflow-desktop_*_amd64.deb
+
   # ═══ Build macOS ═══
   build-macos:
     runs-on: macos-latest
@@ -211,7 +324,7 @@ jobs:
 
   # ═══ Create Release + Upload to S3 ═══
   release:
-    needs: [build-windows, build-linux, build-macos]
+    needs: [build-windows, build-linux, build-linux-deb, build-macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -233,6 +346,7 @@ jobs:
           mkdir -p release-files
           find artifacts/ -name "*.exe" -exec cp {} release-files/ \;
           find artifacts/ -name "*.AppImage" -exec cp {} release-files/ \;
+          find artifacts/ -name "*.deb" -exec cp {} release-files/ \;
           find artifacts/ -name "*.dmg" -exec cp {} release-files/ \;
           echo "=== Release files ==="
           ls -la release-files/
@@ -257,8 +371,20 @@ jobs:
             | Platform | File |
             |----------|------|
             | Windows | `TaskFlowDesktop-Setup-${{ steps.version.outputs.VERSION }}.exe` |
-            | Linux | `TaskFlow-${{ steps.version.outputs.VERSION }}-x86_64.AppImage` |
+            | Ubuntu 24.04+ / Debian 13+ (`.deb`) | `taskflow-desktop_${{ steps.version.outputs.VERSION }}_amd64.deb` |
+            | Other Linux (AppImage) | `TaskFlow-${{ steps.version.outputs.VERSION }}-x86_64.AppImage` |
             | macOS | `TaskFlowDesktop-${{ steps.version.outputs.VERSION }}-universal.dmg` |
+
+            ### Linux install
+
+            ```bash
+            # Ubuntu 24.04+ / Debian 13+
+            sudo apt install ./taskflow-desktop_${{ steps.version.outputs.VERSION }}_amd64.deb
+
+            # Other distros
+            chmod +x TaskFlow-${{ steps.version.outputs.VERSION }}-x86_64.AppImage
+            ./TaskFlow-${{ steps.version.outputs.VERSION }}-x86_64.AppImage
+            ```
 
             ### What's New
             See commit history for changes.
@@ -290,6 +416,7 @@ jobs:
             "downloads": {
               "windows": "https://dp2uotzxlo5a5.cloudfront.net/${S3_PREFIX}/TaskFlowDesktop-Setup-${VERSION}.exe",
               "linux": "https://dp2uotzxlo5a5.cloudfront.net/${S3_PREFIX}/TaskFlow-${VERSION}-x86_64.AppImage",
+              "linux_deb": "https://dp2uotzxlo5a5.cloudfront.net/${S3_PREFIX}/taskflow-desktop_${VERSION}_amd64.deb",
               "macos": "https://dp2uotzxlo5a5.cloudfront.net/${S3_PREFIX}/TaskFlowDesktop-${VERSION}-universal.dmg"
             },
             "github_release": "https://github.com/Giridharan0624/taskflow-desktop/releases/tag/v${VERSION}"
