@@ -4,6 +4,9 @@ import (
 	"embed"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -70,6 +73,28 @@ func main() {
 
 	// Apply platform-specific options (Windows, Linux, macOS)
 	applyPlatformOptions(appOptions)
+
+	// Catch SIGINT (Ctrl-C) and SIGTERM (systemctl stop, pkill,
+	// session-manager logout) so we get a chance to auto-sign-out
+	// before the process dies. Wails handles Windows
+	// WM_QUERYENDSESSION / WM_ENDSESSION through OnShutdown on its
+	// own; this hook is the Unix equivalent.
+	//
+	// We hand off to app.autoSignOutIfRunning with a short budget so
+	// a shutdown sequence that gives us only a few seconds before
+	// SIGKILL still has time for one backend round-trip. After that
+	// we call os.Exit(0) explicitly — Wails' own signal handling can
+	// race here, and the explicit exit guarantees the process
+	// terminates even if something in the runtime is wedged.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		log.Printf("received %s — auto-signing-out and exiting", sig)
+		app.autoSignOutIfRunning(3 * time.Second)
+		closeLogFile()
+		os.Exit(0)
+	}()
 
 	if err := wails.Run(appOptions); err != nil {
 		log.Fatalf("Error starting application: %v", err)

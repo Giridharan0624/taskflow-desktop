@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -340,12 +341,21 @@ func (c *Client) SignIn(data StartTimerData) (*Attendance, error) {
 
 // SignOut calls PUT /attendance/sign-out.
 func (c *Client) SignOut() (*Attendance, error) {
+	return c.SignOutContext(context.Background())
+}
+
+// SignOutContext is SignOut with a caller-supplied context. Used by
+// auto-sign-out paths (tray Quit, OS shutdown, SIGTERM) that must
+// bound the backend call to a few seconds so a slow network can't
+// block process teardown. The shared resty Client's 30-second
+// timeout is too generous for that case.
+func (c *Client) SignOutContext(ctx context.Context) (*Attendance, error) {
 	req, err := c.request()
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := req.SetBody("{}").Put("/attendance/sign-out")
+	resp, err := req.SetContext(ctx).SetBody("{}").Put("/attendance/sign-out")
 	if err != nil {
 		return nil, fmt.Errorf("network error: %w", err)
 	}

@@ -44,11 +44,49 @@ type App struct {
 	// networkErrorCount is read-modify-written from pollAttendance; if two
 	// sessions were ever live at once (pre-fix), the ++ would race.
 	networkErrorCount atomic.Int32
-	State             *state.AppState
-	AuthService       *auth.Service
-	APIClient         *api.Client
-	ActivityMonitor   *monitor.ActivityMonitor
-	TrayManager       *tray.Manager
+	// autoSignOutOnce gates the tray-Quit / OS-shutdown / SIGTERM paths so
+	// only the first one actually hits the backend. A second entry (e.g.
+	// shutdown fires after tray Quit already called it) falls through
+	// without a duplicate POST.
+	autoSignOutOnce sync.Once
+	State           *state.AppState
+	AuthService     *auth.Service
+	APIClient       *api.Client
+	ActivityMonitor *monitor.ActivityMonitor
+	TrayManager     *tray.Manager
+}
+
+// autoSignOutIfRunning posts sign-out to the backend if a timer is
+// currently active, bounded by `timeout` so we don't block OS
+// shutdown on a slow network. Idempotent via sync.Once — the tray
+// Quit path, Wails OnShutdown callback, and SIGTERM handler all
+// invoke it, but only the first wins; later callers short-circuit.
+//
+// Returns fast on: no active timer, missing auth (already signed
+// out), backend error, or timeout. The last two are logged but not
+// surfaced — by the time this runs, the user has already decided to
+// quit; we can't usefully prompt them. The worst case is that the
+// backend keeps the session SIGNED_IN for the attendance-timeout
+// window on the server side — far better than blocking shutdown on
+// a backend outage.
+func (a *App) autoSignOutIfRunning(timeout time.Duration) {
+	a.autoSignOutOnce.Do(func() {
+		if !a.State.IsTimerActive() {
+			return
+		}
+		log.Printf("Auto sign-out: timer active, stopping (timeout %s)...", timeout)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		if _, err := a.APIClient.SignOutContext(ctx); err != nil {
+			if ctx.Err() != nil {
+				log.Printf("Auto sign-out timed out — backend may still show SIGNED_IN: %v", err)
+			} else {
+				log.Printf("Auto sign-out failed — backend may still show SIGNED_IN: %v", err)
+			}
+			return
+		}
+		log.Println("Auto sign-out: timer stopped on backend")
+	})
 }
 
 // startup is called when the app starts. The context is saved for runtime calls.
@@ -76,15 +114,10 @@ func (a *App) startup(ctx context.Context) {
 		OnQuit: func() {
 			go func() {
 				log.Println("Quit requested from tray")
-				// Auto-stop timer before quitting so backend doesn't stay SIGNED_IN
-				if a.State.IsTimerActive() {
-					log.Println("Timer active — signing out before quit...")
-					if _, err := a.APIClient.SignOut(); err != nil {
-						log.Printf("Auto sign-out failed: %v", err)
-					} else {
-						log.Println("Timer stopped successfully")
-					}
-				}
+				// 5 s is enough for a healthy network, short enough
+				// that a user clicking Quit on a flaky connection
+				// isn't stuck watching a frozen tray menu.
+				a.autoSignOutIfRunning(5 * time.Second)
 				a.quitting.Store(true)
 				a.ActivityMonitor.Stop()
 				a.TrayManager.Stop()
@@ -137,8 +170,19 @@ func (a *App) startup(ctx context.Context) {
 	}()
 }
 
-// shutdown is called when the app is closing.
+// shutdown is called when the app is closing. Wails invokes it for
+// EVERY termination path that goes through its lifecycle: user-
+// initiated Quit from the tray, OS shutdown (Windows WM_ENDSESSION,
+// macOS NSApplicationWillTerminate), and SIGTERM on Linux.
+//
+// We auto-sign-out here too — a shorter 3 s budget than the tray
+// Quit path because an OS shutdown sequence may give us only a
+// handful of seconds before SIGKILL. If the tray Quit handler
+// already called autoSignOutIfRunning the sync.Once short-circuits
+// this call; otherwise this is the catch-all that closes the
+// session on OS-driven quits.
 func (a *App) shutdown(ctx context.Context) {
+	a.autoSignOutIfRunning(3 * time.Second)
 	a.stopBackgroundServices()
 	a.ActivityMonitor.Stop()
 	// Close the shared X11 connection (Linux) / no-op (Windows, macOS)
