@@ -136,9 +136,19 @@ func (m *Manager) SetTimerActive(active bool, task *state.CurrentTask) {
 	m.mu.Unlock()
 }
 
-// openBrowser opens a URL in the default browser.
+// openBrowser opens a URL in the default browser. Validated
+// beforehand because macOS `open` routes by URI scheme to whatever
+// handler is registered (javascript:, file:, custom-protocol:// …) —
+// a misconfigured or malicious dashboard URL must not be able to
+// launch arbitrary handlers. See V2-M1.
 func openBrowser(url string) {
-	exec.Command("open", url).Start()
+	if !isSafeBrowserURL(url) {
+		log.Printf("tray: refusing to open non-http(s) URL %q", url)
+		return
+	}
+	if err := exec.Command("open", url).Start(); err != nil {
+		log.Printf("tray: open failed: %v", err)
+	}
 }
 
 // OpenDashboard opens the web dashboard in the default browser.

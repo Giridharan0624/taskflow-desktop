@@ -360,6 +360,60 @@ jobs:
           echo "=== SHA256SUMS ==="
           cat SHA256SUMS
 
+      # ═══ Sign SHA256SUMS (optional — see V2-H1) ═══
+      # Activates once the release signing key is generated and stored:
+      #   1. Generate keypair with: `ssh-keygen -t ed25519 -N "" -f release_key`
+      #      (or any Ed25519 generator). The public key in release_key.pub
+      #      goes into desktop/internal/updater/release.pub (base64 of
+      #      raw 32-byte key — strip any "ssh-ed25519 " prefix and base64
+      #      the key material).
+      #   2. Store the PRIVATE key as the GH secret RELEASE_SIGNING_KEY_B64
+      #      (base64 of the raw 32-byte seed).
+      #   3. Uncomment the block below + commit the pubkey change.
+      # Until then, releases ship unsigned and the updater warns in logs
+      # but continues.
+      #
+      # - name: Sign SHA256SUMS
+      #   env:
+      #     KEY_B64: ${{ secrets.RELEASE_SIGNING_KEY_B64 }}
+      #   run: |
+      #     set -e
+      #     if [ -z "$KEY_B64" ]; then
+      #       echo "RELEASE_SIGNING_KEY_B64 not set — cannot sign"
+      #       exit 1
+      #     fi
+      #     python3 - <<'PY'
+      #     import base64, os, sys
+      #     from nacl.signing import SigningKey
+      #     seed = base64.b64decode(os.environ["KEY_B64"])
+      #     key = SigningKey(seed)
+      #     body = open("release-files/SHA256SUMS", "rb").read()
+      #     sig = key.sign(body).signature
+      #     open("release-files/SHA256SUMS.sig", "wb").write(base64.b64encode(sig))
+      #     PY
+
+      - name: Verify SHA256SUMS covers every release artifact
+        # Belt-and-braces guard against a release-workflow slip-up that
+        # lists a file in the release but omits it from SHA256SUMS —
+        # such a release would silently block every user's auto-update
+        # with a cryptic "no checksum entry" error. See V2-H3.
+        run: |
+          cd release-files
+          set -e
+          missing=0
+          for f in *; do
+            if [ "$f" = "SHA256SUMS" ]; then continue; fi
+            if ! grep -qi " [*]\\?${f}\$" SHA256SUMS; then
+              echo "MISSING: $f not found in SHA256SUMS"
+              missing=1
+            fi
+          done
+          if [ "$missing" != "0" ]; then
+            echo "FAIL: one or more release artifacts are missing from SHA256SUMS"
+            exit 1
+          fi
+          echo "OK: all release artifacts accounted for in SHA256SUMS"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

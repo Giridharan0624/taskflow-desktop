@@ -569,6 +569,13 @@ func utf16(s string) []uint16 {
 }
 
 func openBrowser(url string) {
+	// ShellExecuteW routes arbitrary URI schemes to registered
+	// handlers (file:, javascript:, custom-protocol://…). Defense-in-
+	// depth on top of config.Get's validation. See V2-M1.
+	if !isSafeBrowserURL(url) {
+		log.Printf("tray: refusing to open non-http(s) URL %q", url)
+		return
+	}
 	cmd, _ := syscall.UTF16PtrFromString(url)
 	shell32.NewProc("ShellExecuteW").Call(0, 0, uintptr(unsafe.Pointer(cmd)), 0, 0, 1)
 }

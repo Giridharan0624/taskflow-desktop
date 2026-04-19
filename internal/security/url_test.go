@@ -26,6 +26,15 @@ func TestValidateHTTPSURL(t *testing.T) {
 
 		{"malformed URL rejected", "https://%zz/", true},
 		{"empty string rejected", "", true},
+
+		// V2-C1: userinfo must be rejected. Without this, a compromised
+		// response can smuggle credentials into requests to an
+		// allow-listed host, which Go's http.Client will forward as
+		// HTTP Basic Authorization to that host.
+		{"token userinfo rejected", "https://tokenvalue@github.com/x/y.exe", true},
+		{"user:pass userinfo rejected", "https://user:pass@github.com/x/y.exe", true},
+		{"empty user: colon rejected", "https://:pass@github.com/x/y.exe", true},
+		{"userinfo on allowed subdomain rejected", "https://x@api.github.com/repos/x/y", true},
 	}
 
 	for _, tc := range cases {

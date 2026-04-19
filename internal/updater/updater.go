@@ -53,6 +53,26 @@ var CurrentVersion = "dev"
 // the installer the first was still writing to. See H-UPD-1.
 var installInProgress atomic.Bool
 
+// BeginInstall atomically claims the install-in-progress flag.
+// Returns false if another install is already active — callers should
+// surface a clear "already installing" message instead of proceeding.
+//
+// Pairs with EndInstall (deferred by the caller). Previously the CAS
+// lived inside DownloadAndInstall, DOWNSTREAM of CheckForUpdate —
+// which meant two concurrent InstallUpdate() callers could both
+// complete the network call before either reached the CAS, and the
+// second would get a confusing "already in progress" message for an
+// install they didn't even see start. See V2-M5.
+func BeginInstall() bool {
+	return installInProgress.CompareAndSwap(false, true)
+}
+
+// EndInstall releases the install-in-progress flag. Safe to call if
+// BeginInstall was never called (no-op via Store).
+func EndInstall() {
+	installInProgress.Store(false)
+}
+
 // Release represents a GitHub release.
 type Release struct {
 	TagName string  `json:"tag_name"`
@@ -80,6 +100,10 @@ type UpdateInfo struct {
 	// ChecksumURL is the URL of the SHA256SUMS asset for this release.
 	// Populated by CheckForUpdate; not sent to the frontend.
 	ChecksumURL string `json:"-"`
+	// SignatureURL is the URL of the SHA256SUMS.sig asset, if the
+	// release was signed. Empty when the release is unsigned (the
+	// bootstrap window before release.pub is populated). See V2-H1.
+	SignatureURL string `json:"-"`
 }
 
 // CheckForUpdate checks GitHub releases for a newer version.
@@ -150,12 +174,16 @@ func CheckForUpdate() (*UpdateInfo, error) {
 	// Find the SHA256SUMS asset in the same release. If it is missing we do
 	// not refuse the check (the frontend still shows "update available"),
 	// but DownloadAndInstall will later refuse to install an unverified
-	// binary.
+	// binary. Also pick up the matching signature asset when the
+	// build is configured for signed releases.
 	checksumURL := ""
+	signatureURL := ""
 	for _, asset := range release.Assets {
-		if asset.Name == ChecksumAssetName {
+		switch asset.Name {
+		case ChecksumAssetName:
 			checksumURL = asset.BrowserDownloadURL
-			break
+		case SignatureAssetName:
+			signatureURL = asset.BrowserDownloadURL
 		}
 	}
 
@@ -168,6 +196,7 @@ func CheckForUpdate() (*UpdateInfo, error) {
 		FileName:     fileName,
 		Size:         size,
 		ChecksumURL:  checksumURL,
+		SignatureURL: signatureURL,
 	}, nil
 }
 
@@ -187,15 +216,15 @@ func CheckForUpdate() (*UpdateInfo, error) {
 //   - Verifies the downloaded bytes against the SHA-256 hash published in
 //     the release's SHA256SUMS asset. No verified checksum ⇒ no install.
 func DownloadAndInstall(info *UpdateInfo) error {
-	// Re-entry guard (H-UPD-1). A user double-clicking "Update Now"
-	// used to launch two parallel downloads and two UAC prompts; the
-	// second install could truncate the installer file the first was
-	// still writing to. CompareAndSwap is single-owner — the first
-	// call wins, the second sees the flag already set and bails.
-	if !installInProgress.CompareAndSwap(false, true) {
-		return fmt.Errorf("an update installation is already in progress")
+	// Re-entry guard (V2-M5). Callers in app.go claim the flag via
+	// BeginInstall BEFORE CheckForUpdate and only release it on the
+	// failure path, so by the time we get here the flag is already
+	// true. We don't CAS again — that would deadlock the legitimate
+	// install. The flag is kept on success until process exit so a
+	// late second click can't race shutdown.
+	if !installInProgress.Load() {
+		return fmt.Errorf("DownloadAndInstall called without BeginInstall — programmer error")
 	}
-	defer installInProgress.Store(false)
 
 	if info == nil || !info.Available || info.DownloadURL == "" {
 		return fmt.Errorf("no update available")
@@ -241,7 +270,33 @@ func DownloadAndInstall(info *UpdateInfo) error {
 		return fmt.Errorf("download failed: %w", err)
 	}
 
-	expectedHash, err := fetchExpectedChecksum(csURL.String(), safeName)
+	// Fetch SHA256SUMS as raw bytes so we can verify the release
+	// key's signature over the exact bytes before trusting any hash.
+	// If signed releases are enabled (release.pub non-empty) we
+	// REQUIRE a valid signature; missing or invalid = refuse install.
+	// If signed releases are NOT enabled, we log a loud warning and
+	// proceed using the hash alone (same behavior as before V2-H1).
+	csBody, err := fetchChecksumBody(csURL.String())
+	if err != nil {
+		return fmt.Errorf("failed to obtain checksum: %w", err)
+	}
+	if signedReleases() {
+		if info.SignatureURL == "" {
+			return fmt.Errorf("refusing to install: release is signed-expected but missing %s", SignatureAssetName)
+		}
+		sigBytes, err := fetchSignature(info.SignatureURL)
+		if err != nil {
+			return fmt.Errorf("failed to obtain signature: %w", err)
+		}
+		if err := verifySignature(csBody, sigBytes); err != nil {
+			return fmt.Errorf("signature verification failed: %w", err)
+		}
+		log.Printf("SHA256SUMS signature verified against release public key")
+	} else {
+		log.Printf("WARNING: release signature verification disabled (release.pub is empty) — set up signing per docs to close V2-H1")
+	}
+
+	expectedHash, err := parseSHA256SUMS(string(csBody), safeName)
 	if err != nil {
 		return fmt.Errorf("failed to obtain checksum: %w", err)
 	}
@@ -306,6 +361,38 @@ func downloadToFile(rawURL, destPath string) error {
 		return fmt.Errorf("write: %w", err)
 	}
 	return nil
+}
+
+// fetchChecksumBody downloads a SHA256SUMS file and returns its raw
+// bytes. Split from fetchExpectedChecksum so callers can verify the
+// signature over the exact bytes before parsing.
+func fetchChecksumBody(rawURL string) ([]byte, error) {
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if _, err := security.ValidateHTTPSURL(req.URL.String(), allowedUpdateHosts); err != nil {
+				return fmt.Errorf("redirect refused: %w", err)
+			}
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		},
+	}
+	req, err := http.NewRequest("GET", rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", UserAgent)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d fetching checksums", resp.StatusCode)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 }
 
 // fetchExpectedChecksum downloads a SHA256SUMS file (same format as
@@ -375,8 +462,14 @@ func parseSHA256SUMS(body, fileName string) (string, error) {
 		hash := fields[0]
 		// The filename may be preceded by `*` (binary mode) and may
 		// include a leading path — compare against basename only.
+		//
+		// Case-insensitive comparison: a release-workflow slip-up
+		// where the installer is staged as TaskFlow-v1.2.3.exe but the
+		// SHA256SUMS entry is taskflow-v1.2.3.exe would otherwise
+		// silently block every user's update with a cryptic "no
+		// checksum entry" error. See V2-H3.
 		name := strings.TrimPrefix(fields[len(fields)-1], "*")
-		if filepath.Base(name) == fileName {
+		if strings.EqualFold(filepath.Base(name), fileName) {
 			if len(hash) != 64 {
 				return "", fmt.Errorf("malformed hash for %q: length %d", fileName, len(hash))
 			}

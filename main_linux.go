@@ -57,11 +57,18 @@ func setupLogging() {
 		dataDir = filepath.Join(home, ".local", "share")
 	}
 	logDir := filepath.Join(dataDir, "TaskFlow")
-	os.MkdirAll(logDir, 0755)
-	logFile, err := os.OpenFile(filepath.Join(logDir, "taskflow.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err == nil {
-		log.SetOutput(logFile)
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		// Log dir unreachable; stderr is already the default sink.
+		log.Printf("setupLogging: mkdir %q failed: %v — logging to stderr", logDir, err)
+		return
 	}
+	f, err := os.OpenFile(filepath.Join(logDir, "taskflow.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		log.Printf("setupLogging: open log file failed: %v — logging to stderr", err)
+		return
+	}
+	logFileHandle = f
+	log.SetOutput(f)
 }
 
 func applyPlatformOptions(opts *options.App) {

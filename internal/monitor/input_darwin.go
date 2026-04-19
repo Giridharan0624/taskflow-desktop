@@ -55,6 +55,18 @@ func NewInputTracker() *InputTracker {
 	return t
 }
 
+// Reset zeroes the running totals and reseeds the baseline system-
+// counter snapshot from the current CGEventSource values, so the
+// next session starts at delta = 0 regardless of how many events the
+// system counted while the tracker was stopped. See M-MON-1.
+func (t *InputTracker) Reset() {
+	t.keyboardTotal.Store(0)
+	t.mouseTotal.Store(0)
+	t.lastKbCount = uint64(C.getKeyboardCount())
+	t.lastMoveCount = uint64(C.getMouseMoveCount())
+	t.lastClickCount = uint64(C.getMouseClickCount())
+}
+
 // GetCounts returns current keyboard and mouse event totals.
 func (t *InputTracker) GetCounts() (keyboard uint32, mouse uint32) {
 	// Keyboard delta

@@ -8,6 +8,7 @@
 package security
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -31,6 +32,16 @@ func ValidateHTTPSURL(raw string, allowedHosts []string) (*url.URL, error) {
 	}
 	if u.Scheme != "https" {
 		return nil, fmt.Errorf("URL must be https, got %q", u.Scheme)
+	}
+	// Reject URLs that carry userinfo (`https://user:pass@host/…` or
+	// `https://token@host/…`). Without this guard a compromised or
+	// malicious response from our backend could smuggle attacker-
+	// controlled credentials into an HTTPS request to an allow-listed
+	// host — the Go http.Client forwards `u.User` as HTTP Basic
+	// authentication, and GitHub / AWS would then receive those
+	// credentials as if we had authenticated. See V2-C1.
+	if u.User != nil {
+		return nil, errors.New("URL must not contain userinfo")
 	}
 	host := strings.ToLower(u.Hostname())
 	for _, a := range allowedHosts {

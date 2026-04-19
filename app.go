@@ -153,6 +153,10 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	a.TrayManager.Stop()
 	log.Println("Application shutdown complete")
+	// Flush + close the log file last so the line above is guaranteed
+	// to land on disk (especially on Windows, where unflushed buffers
+	// can be lost on process termination). See M-CORE-1.
+	closeLogFile()
 }
 
 // beforeClose is called when the user clicks the X button.
@@ -222,15 +226,23 @@ func (a *App) currentSessionCtx() context.Context {
 // per-session goroutines to exit. Does not return until every goroutine has
 // observed the cancellation — this is what guarantees the next Start cannot
 // race a stale goroutine.
+//
+// Explicitly idempotent: both the auth:expired recovery path and the
+// ordinary Logout path call this back-to-back under some timing
+// conditions. Second+ calls find sessionCancel already nil and return
+// immediately without calling Wait(), so a caller can invoke it
+// defensively without worrying about waste. See V2-L1.
 func (a *App) stopBackgroundServices() {
 	a.sessionMu.Lock()
 	cancel := a.sessionCancel
 	a.sessionCancel = nil
 	a.sessionMu.Unlock()
 
-	if cancel != nil {
-		cancel()
+	if cancel == nil {
+		// Already stopped — nothing to cancel, nothing to wait on.
+		return
 	}
+	cancel()
 	a.sessionWG.Wait()
 }
 
@@ -510,6 +522,24 @@ func (a *App) CheckForUpdate() (*updater.UpdateInfo, error) {
 // .exe can still hold file handles (log file, keychain) when NSIS tries
 // to overwrite it, and the installer silently fails. See H-UPD-3.
 func (a *App) InstallUpdate() error {
+	// Claim the in-progress flag BEFORE the CheckForUpdate network
+	// call. Two rapid "Update Now" clicks used to both get as far as
+	// DownloadAndInstall before the CAS there rejected the second —
+	// by which point one install was visibly running, making the
+	// "already installing" error look like an unrelated failure. See
+	// V2-M5.
+	if !updater.BeginInstall() {
+		return fmt.Errorf("an update installation is already in progress")
+	}
+	// Released only on failure. On success we call runtime.Quit below
+	// and the process tears down — the OS clears the flag implicitly.
+	released := false
+	defer func() {
+		if !released {
+			updater.EndInstall()
+		}
+	}()
+
 	info, err := updater.CheckForUpdate()
 	if err != nil {
 		return fmt.Errorf("update check: %w", err)
@@ -524,6 +554,9 @@ func (a *App) InstallUpdate() error {
 	if err := updater.DownloadAndInstall(info); err != nil {
 		return err
 	}
+	// Install succeeded — keep the flag claimed through shutdown so a
+	// last-moment second click can't race the process termination.
+	released = true
 
 	// Installer launched (ShellExecute is fire-and-forget). Drain our
 	// own goroutines so the running .exe releases file handles before

@@ -154,6 +154,16 @@ func (m *ActivityMonitor) Stop() {
 	// no separate reset step.
 	m.flushPendingLocked()
 
+	// Zero the input tracker totals + reseed its baselines. Without
+	// this, the atomic keyboard/mouse counters retain the full
+	// historical totals across Start→Stop→Start cycles, and the first
+	// heartbeat after re-login reports a huge spurious delta that the
+	// <1000 spike cap silently truncates (dropping legitimate bursts
+	// along with the bogus historical portion). See M-MON-1.
+	if m.inputTracker != nil {
+		m.inputTracker.Reset()
+	}
+
 	log.Println("Activity monitor stopped")
 }
 

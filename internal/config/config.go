@@ -3,6 +3,8 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -29,47 +31,86 @@ type Config struct {
 }
 
 var (
-	loaded     *Config
-	loadedOnce sync.Once
+	cfgMu sync.Mutex
+	cfg   *Config
 )
 
 // Get returns the app configuration. Values are baked in at build time
 // (via -ldflags) and fall back to config.json for dev mode.
 //
-// sync.Once is deliberate: the previous implementation had a race where
-// `loaded` was assigned a zero-value struct before the dev-fallback
-// panic fired, so a concurrent second caller could observe a non-nil
-// but empty Config and downstream would panic with a misleading "URL
-// scheme" error. See C-API-3.
+// Previous implementation used sync.Once, which has a nasty failure
+// mode: if the init function panics (malformed config.json, missing
+// fields), the Once is still marked done and `cfg` stays nil. Every
+// subsequent caller then returns nil and the app crashes with an
+// opaque nil-deref in a random goroutine far from the real cause. See
+// V2-H2.
+//
+// The explicit-mutex pattern here allows a future retry path AND
+// keeps the atomic-publication invariant (cfg is only set after the
+// struct is fully populated AND validated; concurrent callers either
+// block on the lock or observe the finished pointer — never a
+// half-initialised one).
 func Get() *Config {
-	loadedOnce.Do(func() {
-		cfg := &Config{
-			APIURL:          apiURL,
-			CognitoRegion:   cognitoRegion,
-			CognitoPoolID:   cognitoPoolID,
-			CognitoClientID: cognitoClientID,
-			WebDashboardURL: webDashboardURL,
+	cfgMu.Lock()
+	defer cfgMu.Unlock()
+	if cfg != nil {
+		return cfg
+	}
+
+	c := &Config{
+		APIURL:          apiURL,
+		CognitoRegion:   cognitoRegion,
+		CognitoPoolID:   cognitoPoolID,
+		CognitoClientID: cognitoClientID,
+		WebDashboardURL: webDashboardURL,
+	}
+	// If ldflags weren't injected (dev mode), try loading from config.json.
+	if c.APIURL == "" || c.CognitoClientID == "" {
+		if err := loadFromFile(c); err != nil {
+			panic("Config not available. For production: use build.ps1. For dev: create config.json from config.example.json.")
 		}
-		// If ldflags not injected (dev mode), try loading from config.json
-		if cfg.APIURL == "" || cfg.CognitoClientID == "" {
-			if err := loadFromFile(cfg); err != nil {
-				panic("Config not available. For production: use build.ps1. For dev: create config.json from config.example.json.")
-			}
-		}
-		// Validate every required field is populated. Previously the gate
-		// above only checked APIURL and CognitoClientID, so a config.json
-		// missing e.g. CognitoPoolID would produce an opaque AWS SDK error
-		// deep inside the Cognito client instead of a clear startup failure.
-		// See M-API-1.
-		if missing := missingFields(cfg); len(missing) > 0 {
-			panic("Config incomplete — missing required fields: " + strings.Join(missing, ", "))
-		}
-		// Only commit to the package-level pointer after the struct is
-		// fully populated — concurrent callers either see the full
-		// config or block in sync.Once, never observe a half-state.
-		loaded = cfg
-	})
-	return loaded
+	}
+	if missing := missingFields(c); len(missing) > 0 {
+		panic("Config incomplete — missing required fields: " + strings.Join(missing, ", "))
+	}
+	// Sanitise WebDashboardURL. It's optional (only the footer link
+	// and tray menu use it), so silently clear it rather than fail
+	// startup if it's malformed — that way the app still works, just
+	// without a dashboard link. See V2-M1.
+	if c.WebDashboardURL != "" && !isSafeDashboardURL(c.WebDashboardURL) {
+		log.Printf("config: WebDashboardURL %q is not http(s) or contains userinfo — clearing", c.WebDashboardURL)
+		c.WebDashboardURL = ""
+	}
+	cfg = c
+	return cfg
+}
+
+// reset is for tests only — clears the cached config so the next Get
+// call re-reads env / file / ldflags. Not exported in the public API.
+func reset() {
+	cfgMu.Lock()
+	defer cfgMu.Unlock()
+	cfg = nil
+}
+
+// isSafeDashboardURL accepts http(s) URLs with a host and no userinfo.
+// Matches the contract in internal/tray/types.go:isSafeBrowserURL but
+// duplicated here to avoid a config→tray import cycle.
+func isSafeDashboardURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return false
+	}
+	if u.User != nil {
+		return false
+	}
+	if u.Host == "" {
+		return false
+	}
+	return true
 }
 
 // missingFields returns the names of required Config fields that are empty.

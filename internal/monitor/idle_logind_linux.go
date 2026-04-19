@@ -29,9 +29,19 @@ import (
 //     Manjaro). Non-systemd distros — Void, Artix, Gentoo with OpenRC —
 //     fall through to the MIT-SCREEN-SAVER backend.
 
+// logindRetryCooldown bounds how often we re-attempt the D-Bus proxy
+// setup after a failure. Without this, every logindIdleSeconds call
+// during a logind outage would re-run GetSessionByPID / GetSession —
+// amplifying the outage into a hot loop of D-Bus traffic. A one-
+// minute cooldown gives logind time to come back after a restart
+// without pathological retry behaviour. See V2-M4.
+const logindRetryCooldown = 60 * time.Second
+
 var (
-	logindOnce    sync.Once
-	logindSession dbus.BusObject
+	logindMu         sync.Mutex
+	logindSession    dbus.BusObject
+	logindInitDone   bool
+	logindLastTryAt  time.Time
 )
 
 // Note on shutdown: dbus.SystemBus() returns a PROCESS-shared connection
@@ -42,34 +52,58 @@ var (
 
 // getLogindSession returns the per-session D-Bus proxy (nil if logind
 // is unavailable or the session can't be resolved). Caller MUST nil-
-// check.
+// check. If a previous init failed, subsequent calls retry at most
+// once per logindRetryCooldown — this supports recovery from a logind
+// restart (rare but observed during distro upgrades) without hot-
+// looping during a sustained outage.
 func getLogindSession() dbus.BusObject {
-	logindOnce.Do(func() {
-		conn, err := dbus.SystemBus()
-		if err != nil {
-			return
-		}
-		mgr := conn.Object(
-			"org.freedesktop.login1",
-			dbus.ObjectPath("/org/freedesktop/login1"),
-		)
+	logindMu.Lock()
+	defer logindMu.Unlock()
+	if logindSession != nil {
+		return logindSession
+	}
+	if logindInitDone && time.Since(logindLastTryAt) < logindRetryCooldown {
+		return nil
+	}
+	logindInitDone = true
+	logindLastTryAt = time.Now()
 
-		var sessionPath dbus.ObjectPath
-		if sid := os.Getenv("XDG_SESSION_ID"); sid != "" {
-			if err := mgr.Call("org.freedesktop.login1.Manager.GetSession", 0, sid).Store(&sessionPath); err != nil {
-				return
-			}
-		} else {
-			if err := mgr.Call("org.freedesktop.login1.Manager.GetSessionByPID", 0, uint32(os.Getpid())).Store(&sessionPath); err != nil {
-				return
-			}
+	conn, err := dbus.SystemBus()
+	if err != nil {
+		return nil
+	}
+	mgr := conn.Object(
+		"org.freedesktop.login1",
+		dbus.ObjectPath("/org/freedesktop/login1"),
+	)
+
+	var sessionPath dbus.ObjectPath
+	if sid := os.Getenv("XDG_SESSION_ID"); sid != "" {
+		if err := mgr.Call("org.freedesktop.login1.Manager.GetSession", 0, sid).Store(&sessionPath); err != nil {
+			return nil
 		}
-		if sessionPath == "" {
-			return
+	} else {
+		if err := mgr.Call("org.freedesktop.login1.Manager.GetSessionByPID", 0, uint32(os.Getpid())).Store(&sessionPath); err != nil {
+			return nil
 		}
-		logindSession = conn.Object("org.freedesktop.login1", sessionPath)
-	})
+	}
+	if sessionPath == "" {
+		return nil
+	}
+	logindSession = conn.Object("org.freedesktop.login1", sessionPath)
 	return logindSession
+}
+
+// invalidateLogindSession clears the cached proxy so the next
+// getLogindSession call rebuilds it from scratch. Called from
+// logindIdleSeconds on D-Bus errors that look like the session object
+// has gone stale (logind crashed / restarted mid-run).
+func invalidateLogindSession() {
+	logindMu.Lock()
+	logindSession = nil
+	// Leave logindInitDone=true + logindLastTryAt as-is so the
+	// cooldown keeps us from hot-retrying.
+	logindMu.Unlock()
 }
 
 // logindIdleSeconds reports idle seconds via login1.Session.IdleHint /
@@ -88,6 +122,10 @@ func logindIdleSeconds() (int, bool) {
 		"org.freedesktop.DBus.Properties.Get", 0,
 		"org.freedesktop.login1.Session", "IdleHint",
 	).Store(&hint); err != nil {
+		// Most likely cause is a logind restart — the cached proxy
+		// now points at a dead connection. Drop the cache so the
+		// next call retries (subject to the cooldown).
+		invalidateLogindSession()
 		return 0, false
 	}
 	idle, ok := hint.Value().(bool)
@@ -105,6 +143,7 @@ func logindIdleSeconds() (int, bool) {
 		"org.freedesktop.DBus.Properties.Get", 0,
 		"org.freedesktop.login1.Session", "IdleSinceHint",
 	).Store(&since); err != nil {
+		invalidateLogindSession()
 		return 0, false
 	}
 	sinceMicros, ok := since.Value().(uint64)
@@ -115,6 +154,14 @@ func logindIdleSeconds() (int, bool) {
 	if elapsed < 0 {
 		// Clock skew or NTP step — treat as "just became idle".
 		return 0, true
+	}
+	// Cap at one day to defuse a stale IdleSinceHint from before a
+	// long suspend/resume or clock jump. The <2s "active?" heuristic
+	// downstream doesn't care about absolute values beyond a few
+	// minutes, so a cap keeps the returned number useful.
+	const maxIdle = int64(24 * 3600 * 1_000_000)
+	if elapsed > maxIdle {
+		elapsed = maxIdle
 	}
 	return int(elapsed / 1_000_000), true
 }

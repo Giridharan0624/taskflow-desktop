@@ -43,6 +43,24 @@ func NewInputTracker() *InputTracker {
 	return t
 }
 
+// Reset zeroes the running keyboard/mouse totals and resyncs the
+// cursor baseline to the current position. Called from
+// ActivityMonitor.Stop so the next Start→Start cycle sees a clean
+// slate — previously the atomic counters carried historical totals
+// across sessions, and the first heartbeat after re-login reported a
+// massive spurious delta that the <1000 spike cap then silently
+// truncated (both the bogus historical portion AND any legitimate
+// burst). See M-MON-1.
+func (t *InputTracker) Reset() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.keyboardTotal.Store(0)
+	t.mouseTotal.Store(0)
+	x, y := getX11().getMousePos()
+	t.lastCursorX = x
+	t.lastCursorY = y
+}
+
 // GetCounts returns current keyboard and mouse event totals.
 func (t *InputTracker) GetCounts() (keyboard uint32, mouse uint32) {
 	t.mu.Lock()

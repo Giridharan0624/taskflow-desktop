@@ -55,6 +55,32 @@ func NewInputTracker() *InputTracker {
 	return t
 }
 
+// Reset zeroes the running keyboard/mouse totals and resyncs cursor +
+// keystate baselines to the current OS state. Called from
+// ActivityMonitor.Stop so the next session starts from a clean zero
+// and the first heartbeat doesn't report a historical accumulation.
+// See M-MON-1.
+func (t *InputTracker) Reset() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.keyboardTotal.Store(0)
+	t.mouseTotal.Store(0)
+
+	// Reseed cursor baseline.
+	var pt POINT
+	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+	t.lastCursorX = pt.X
+	t.lastCursorY = pt.Y
+
+	// Reseed key states — without this, a key held down across the
+	// Reset boundary would look newly-pressed on the next GetCounts
+	// tick and inflate the counter by one.
+	for vk := 0x01; vk < 0xFF; vk++ {
+		ret, _, _ := procGetAsyncKeyState.Call(uintptr(vk))
+		t.lastKeyStates[vk] = (ret & 0x8000) != 0
+	}
+}
+
 // GetCounts returns current keyboard and mouse event totals.
 // Uses GetAsyncKeyState because this polls from a background goroutine with
 // no message pump — GetKeyboardState would return all zeros in that context.

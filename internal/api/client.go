@@ -77,6 +77,12 @@ type User struct {
 // Client handles all API communication with the backend.
 type Client struct {
 	http        *resty.Client
+	// uploads is a separate resty.Client with a longer timeout for
+	// S3 PUT uploads. Previously all requests shared one 30s budget,
+	// so a 2 MB screenshot over a slow uplink would silently time out
+	// and the heartbeat would land without the screenshot URL. See
+	// M-API-2.
+	uploads     *resty.Client
 	authService *auth.Service
 	appState    *state.AppState
 }
@@ -90,34 +96,45 @@ func NewClient(authService *auth.Service, appState *state.AppState) *Client {
 		panic("API URL must use HTTPS — refusing to start with insecure connection")
 	}
 
-	// TLS 1.3 minimum, no insecure ciphers
+	// TLS 1.3 minimum, no insecure ciphers. Shared across both resty
+	// clients — cert caching and connection pooling stay unified.
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS13,
 		},
 	}
 
+	// Redirect policy shared by both clients: HTTPS-only, max 10 hops.
+	checkRedirect := func(req *http.Request, via []*http.Request) error {
+		if req.URL.Scheme != "https" {
+			return fmt.Errorf("refusing non-https redirect to %q", req.URL.String())
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("too many redirects")
+		}
+		return nil
+	}
+
 	client := resty.NewWithClient(&http.Client{
-		Transport: transport,
-		Timeout:   30 * time.Second,
-		// Enforce HTTPS on redirect targets too. The HasPrefix check above
-		// only validates the original APIURL — without CheckRedirect the
-		// default Go client will happily follow a 302 to http://. See M-API-3.
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if req.URL.Scheme != "https" {
-				return fmt.Errorf("refusing non-https redirect to %q", req.URL.String())
-			}
-			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
-			}
-			return nil
-		},
+		Transport:     transport,
+		Timeout:       30 * time.Second,
+		CheckRedirect: checkRedirect,
 	}).
 		SetBaseURL(cfg.APIURL).
 		SetHeader("Content-Type", "application/json")
 
+	// Uploads get 3 minutes. A multi-MB screenshot over a hotel-WiFi
+	// uplink can easily take >30s; without a separate budget we
+	// silently drop screenshots during bad network windows.
+	uploads := resty.NewWithClient(&http.Client{
+		Transport:     transport,
+		Timeout:       3 * time.Minute,
+		CheckRedirect: checkRedirect,
+	})
+
 	return &Client{
 		http:        client,
+		uploads:     uploads,
 		authService: authService,
 		appState:    appState,
 	}
@@ -374,8 +391,11 @@ func (c *Client) UploadScreenshot(jpegData []byte, filename string) (string, err
 		return "", fmt.Errorf("refusing screenshot upload: %w", err)
 	}
 
-	// Step 2: Upload directly to S3 (via the validated URL).
-	s3Resp, err := c.http.R().
+	// Step 2: Upload directly to S3 (via the validated URL). Uses the
+	// dedicated c.uploads client with a longer (3 min) timeout so a
+	// multi-MB screenshot on a slow uplink isn't silently dropped by
+	// the 30 s API-call budget. See M-API-2.
+	s3Resp, err := c.uploads.R().
 		SetHeader("Content-Type", "image/jpeg").
 		SetBody(jpegData).
 		Put(uploadURL.String())

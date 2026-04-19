@@ -113,6 +113,18 @@ func CloseX11() {
 	x11Once = sync.Once{}
 }
 
+// invalidateX11 drops the cached connection WITHOUT taking the lock —
+// callers must already hold x11Mu. Used by health-check helpers to
+// abandon a dead connection so the next getX11 reconnects.
+func invalidateX11Locked() {
+	if x11Inst == nil {
+		return
+	}
+	x11Inst.conn.Close()
+	x11Inst = nil
+	x11Once = sync.Once{}
+}
+
 // atom resolves an EWMH atom name to its numeric ID, caching the result.
 // Returns 0 on failure — callers that pass 0 to xproto.GetProperty will
 // receive an X error which propagates as an empty reply, matching the
@@ -135,12 +147,26 @@ func (x *x11) atom(name string) xproto.Atom {
 // MIT-SCREEN-SAVER, or 0 if the extension is unavailable. This is
 // byte-for-byte what `xprintidle` returns — the tool is literally a 30-
 // line wrapper over the same extension.
+//
+// Also doubles as the X-server health check: this runs every second
+// from the activity tick, so an error here is the fastest signal
+// that the X server went away (crash, display hot-swap). On error we
+// invalidate the shared connection so the NEXT getX11() reconnects.
+// Without that, a dead connection would silently keep returning 0
+// idle forever, inflating the keyboard heuristic's false-press rate
+// until the next app restart. See V2-L2.
 func (x *x11) getIdleMs() int {
 	if x == nil || !x.haveScreensaver {
 		return 0
 	}
 	info, err := screensaver.QueryInfo(x.conn, xproto.Drawable(x.root)).Reply()
 	if err != nil || info == nil {
+		// Drop the cache; next caller reconnects.
+		x11Mu.Lock()
+		if x11Inst == x {
+			invalidateX11Locked()
+		}
+		x11Mu.Unlock()
 		return 0
 	}
 	return int(info.MsSinceUserInput)

@@ -66,9 +66,10 @@ type Tokens struct {
 //
 // See H-AUTH-4, H-AUTH-5 in docs/BUG-REPORT-GO.md.
 type Service struct {
-	client   *cognito.Client
-	state    *state.AppState
-	clientID string // Cognito app client ID from config
+	client    *cognito.Client
+	state     *state.AppState
+	clientID  string // Cognito app client ID from config
+	expectedIss string // https://cognito-idp.<region>.amazonaws.com/<poolID>
 
 	mu     sync.Mutex
 	tokens *Tokens
@@ -91,9 +92,13 @@ func NewService(appState *state.AppState) *Service {
 	})
 
 	return &Service{
-		client:   client,
-		state:    appState,
-		clientID: cfg.CognitoClientID,
+		client:    client,
+		state:     appState,
+		clientID:  cfg.CognitoClientID,
+		// Cognito issues tokens with iss = https://cognito-idp.<region>.amazonaws.com/<poolID>.
+		// We use this to reject tokens from the wrong pool during
+		// client-side sanity checks (see verifyIDTokenClaims / M-AUTH-3).
+		expectedIss: fmt.Sprintf("https://cognito-idp.%s.amazonaws.com/%s", cfg.CognitoRegion, cfg.CognitoPoolID),
 	}
 }
 
@@ -239,8 +244,15 @@ func (s *Service) TryRestoreSession() error {
 		return err
 	}
 
-	// Still valid — commit immediately.
+	// Still valid — sanity-check claims before committing. The server
+	// will verify the signature on every API call, but rejecting an
+	// obviously-stale or wrong-pool token here avoids wiring the app
+	// into a dead session. See M-AUTH-3.
 	if time.Now().Unix() <= tokens.ExpiresAt-300 {
+		if err := s.verifyIDTokenClaims(tokens.IDToken); err != nil {
+			log.Printf("auth: stored id_token rejected (%v) — forcing re-login", err)
+			return fmt.Errorf("stored session rejected: %w", err)
+		}
 		s.mu.Lock()
 		s.tokens = tokens
 		s.mu.Unlock()
@@ -257,6 +269,12 @@ func (s *Service) TryRestoreSession() error {
 	// Cognito's refresh response does not include a new RefreshToken, so
 	// reuse the one we loaded from keyring.
 	refreshed.RefreshToken = tokens.RefreshToken
+	// Same claim check on the refreshed token — a compromised token-
+	// issuing endpoint is the only realistic way an iss/exp mismatch
+	// shows up here, and the cost of the check is a few microseconds.
+	if err := s.verifyIDTokenClaims(refreshed.IDToken); err != nil {
+		return fmt.Errorf("refreshed token rejected: %w", err)
+	}
 
 	s.mu.Lock()
 	s.tokens = refreshed
@@ -363,6 +381,62 @@ func (s *Service) refreshTokensLocked() error {
 	s.tokens.ExpiresAt = newTokens.ExpiresAt
 
 	return s.saveTokensToKeyring()
+}
+
+// verifyIDTokenClaims does CHEAP client-side sanity checks on a JWT
+// before the Service stores it as the live session:
+//
+//   - exp is in the future (with 5-minute tolerance for clock skew)
+//   - iss matches the configured Cognito pool
+//
+// This is NOT a signature check — the server still does that on every
+// API call, which is the real security guarantee. Its job is to catch
+// locally-obvious problems (stored token expired while the app was
+// asleep; config pointed at the wrong Cognito pool; a corrupted
+// keyring entry decoded to something token-shaped but meaningless) so
+// the app surfaces a clean "please re-login" state instead of
+// silently propagating a dead token into every API call. See M-AUTH-3.
+func (s *Service) verifyIDTokenClaims(idToken string) error {
+	parts := strings.Split(idToken, ".")
+	if len(parts) != 3 {
+		return errors.New("not a JWT (expected 3 segments)")
+	}
+	payload := parts[1]
+	switch len(payload) % 4 {
+	case 2:
+		payload += "=="
+	case 3:
+		payload += "="
+	}
+	decoded, err := base64.URLEncoding.DecodeString(payload)
+	if err != nil {
+		return fmt.Errorf("payload base64: %w", err)
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(decoded, &raw); err != nil {
+		return fmt.Errorf("payload json: %w", err)
+	}
+	// exp is a JSON number (float64 after unmarshal) per RFC 7519.
+	expRaw, ok := raw["exp"].(float64)
+	if !ok {
+		return errors.New("missing or non-numeric exp claim")
+	}
+	// Allow 5 minutes of clock skew before rejecting — Cognito
+	// tokens are valid for ~1 hour, so this is generous without
+	// becoming a security hole.
+	const skew = 5 * 60
+	if int64(expRaw) < time.Now().Unix()-skew {
+		return fmt.Errorf("token expired (exp=%d, now=%d)", int64(expRaw), time.Now().Unix())
+	}
+	// iss is a JSON string. If the caller built the Service against
+	// the wrong Cognito pool/region, iss will mismatch — better to
+	// fail now than to chase a "user has no tasks" ticket later
+	// (which is exactly what "tokens from wrong pool" looks like).
+	iss, _ := raw["iss"].(string)
+	if iss != s.expectedIss {
+		return fmt.Errorf("iss mismatch: token=%q expected=%q", iss, s.expectedIss)
+	}
+	return nil
 }
 
 // decodeIDToken extracts claims from the JWT without verification

@@ -14,35 +14,48 @@ import (
 // or platform-native APIs (Linux: X11, macOS: CoreGraphics).
 // This replaces the old Win32 BitBlt approach which caused GPU conflicts with video
 // conferencing apps (Google Meet, Zoom, Teams) on RTX GPUs.
-type ScreenshotCapture struct{}
+//
+// idle is cached at construction so IsScreenLocked doesn't allocate a
+// fresh detector per screenshot — pattern-consistency with
+// InputTracker. See V2-M3.
+type ScreenshotCapture struct {
+	idle *IdleDetector
+}
 
 // NewScreenshotCapture creates a new screenshot capture instance.
 func NewScreenshotCapture() *ScreenshotCapture {
-	return &ScreenshotCapture{}
+	return &ScreenshotCapture{
+		idle: NewIdleDetector(),
+	}
 }
 
-// IsScreenLocked checks if the user's session is likely locked.
-// Uses idle time as a heuristic — if idle for over 10 minutes, likely locked.
+// IsScreenLocked reports whether the user's desktop session is
+// currently locked.
 //
-// TODO(H-MON-3): this is a two-sided proxy with known failure modes:
-//   - False negative (privacy breach): a locked screen with a mouse
-//     jiggler or auto-moving cursor reads as active and gets captured.
-//   - False positive (lost data): a user reading a long document for
-//     >10 minutes reads as locked and the capture is skipped.
+// Resolution order:
+//  1. Native OS API per platform (nativeIsScreenLocked below):
+//     - Windows: WTSQuerySessionInformation / WTS_SESSIONSTATE_LOCK
+//     - Linux:   org.freedesktop.login1.Session.LockedHint
+//     - macOS:   not implemented yet, falls through to idle proxy
+//  2. Fallback: idle > 10 min heuristic (the pre-Phase-3 behavior)
 //
-// Replacing this with native APIs requires platform-specific code:
-//   - Windows: WTSQuerySessionInformation(WTSSessionInfoEx) + check
-//     WTSINFOEX_LEVEL1.SessionFlags for WTS_SESSIONSTATE_LOCK.
-//   - macOS:   CGSessionCopyCurrentDictionary + CGSSessionScreenIsLocked
-//     via cgo.
-//   - Linux:   loginctl / org.freedesktop.login1 D-Bus, LockedHint
-//     property on the current session.
-//
-// Left as-is for now because a half-implemented native check that gets
-// the failure modes wrong is worse than the current proxy.
+// The native path closes the two-sided failure mode of the idle
+// proxy: a mouse-jiggler no longer keeps the capture running on a
+// locked screen, and a user reading a long doc for >10 min is no
+// longer skipped. When the native call returns ok=false (API
+// unavailable, D-Bus down, etc.) we silently fall through to the
+// idle heuristic — the degradation is the same as the pre-fix
+// behavior, never worse. See H-MON-3.
 func (sc *ScreenshotCapture) IsScreenLocked() bool {
-	idle := NewIdleDetector()
-	return idle.GetIdleSeconds() > 600
+	if locked, ok := nativeIsScreenLocked(); ok {
+		return locked
+	}
+	if sc.idle == nil {
+		// Defensive: constructor always sets idle; only paths that
+		// skip NewScreenshotCapture would land here.
+		return false
+	}
+	return sc.idle.GetIdleSeconds() > 600
 }
 
 // CaptureScreen takes a screenshot and returns it as JPEG bytes.

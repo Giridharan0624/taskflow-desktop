@@ -175,7 +175,16 @@ func (m *Manager) SetTimerActive(active bool, task *state.CurrentTask) {
 // XDG-standard entry point every major desktop (GNOME, KDE, XFCE, etc.)
 // installs by default — replacing it would mean reimplementing mimeapps.
 // list resolution, which is well out of scope here.
+//
+// Validated beforehand: xdg-open also routes by URI scheme and would
+// happily dispatch file:/javascript:/custom-scheme: URIs to registered
+// handlers. Defense-in-depth on top of config.Get's validation. See
+// V2-M1.
 func openBrowser(url string) {
+	if !isSafeBrowserURL(url) {
+		log.Printf("tray: refusing to open non-http(s) URL %q", url)
+		return
+	}
 	if err := exec.Command("xdg-open", url).Start(); err != nil {
 		log.Printf("tray: xdg-open failed: %v", err)
 	}
