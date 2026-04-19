@@ -110,6 +110,16 @@ func NewService(appState *state.AppState) *Service {
 // new tokens are committed. This prevents a concurrent GetIDToken from
 // observing a half-committed state.
 func (s *Service) Login(identifier, password string) (*LoginResult, error) {
+	// Trim whitespace up front. The frontend trims too, but a modified
+	// client (or a workflow that pipes an ID from the clipboard) can
+	// ship `" user@x.com "` across IPC — without this Cognito rejects
+	// with an opaque "UserNotFoundException" that looks like a wrong
+	// password. Empty-string check catches DevTools-bypassed "required"
+	// attributes.
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" {
+		return nil, fmt.Errorf("email or employee ID is required")
+	}
 	email := identifier
 
 	// If it looks like an Employee ID (not an email), resolve it. The
@@ -192,6 +202,17 @@ func (s *Service) Login(identifier, password string) (*LoginResult, error) {
 // The Cognito challenge session is read from internal state (set during Login),
 // never passed across the IPC boundary.
 func (s *Service) CompleteNewPasswordChallenge(newPassword string) error {
+	// Validate the password locally before wrapping the whole call in
+	// the Service mutex + shipping it to Cognito. The frontend has
+	// minLength={8} but that's HTML5, bypassable via DevTools; and an
+	// empty string here produces an opaque AWS SDK error that looks
+	// like a network failure to the user. Mirror the Cognito default
+	// pool policy: ≥8 chars after trim. The Cognito call is still the
+	// source of truth for upper/lower/digit rules.
+	if len(strings.TrimSpace(newPassword)) < 8 {
+		return fmt.Errorf("new password must be at least 8 characters")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

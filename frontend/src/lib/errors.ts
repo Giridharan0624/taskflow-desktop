@@ -46,10 +46,25 @@ export function friendlyError(err: unknown): string {
   if (raw.includes("500") || raw.includes("Internal server error"))
     return "Something went wrong. Please try again.";
 
-  // If the message is already short and readable, use it
+  // If the message is already short and readable, use it — but
+  // strip anything that could look like markup. React's current
+  // renderers auto-escape, so `<img onerror>` displays as literal
+  // text today, not script. This is defense-in-depth against a
+  // future refactor that switches to dangerouslySetInnerHTML or
+  // injects the error into a template that doesn't escape.
   if (raw.length < 80 && !raw.includes("::") && !raw.includes("Error:"))
-    return raw;
+    return sanitizeDisplayString(raw);
 
   // Fallback
   return "Something went wrong. Please try again.";
+}
+
+// sanitizeDisplayString removes characters that have no legitimate
+// place in a user-facing error: HTML angle brackets, NULs, and
+// non-printable control chars other than \n and \t. Leaves the
+// string otherwise intact.
+function sanitizeDisplayString(s: string): string {
+  return s
+    .replace(/[<>]/g, "")       // strip angle brackets
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, ""); // keep \t, \n, \r
 }
