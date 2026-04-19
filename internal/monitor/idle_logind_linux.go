@@ -34,6 +34,12 @@ var (
 	logindSession dbus.BusObject
 )
 
+// Note on shutdown: dbus.SystemBus() returns a PROCESS-shared connection
+// that godbus itself manages. Explicitly closing it from here would
+// affect any other D-Bus consumer (none today, but cross-package
+// sharing breaks if we assume otherwise) and the OS reclaims the
+// socket on process exit anyway. No Close() helper is exposed.
+
 // getLogindSession returns the per-session D-Bus proxy (nil if logind
 // is unavailable or the session can't be resolved). Caller MUST nil-
 // check.

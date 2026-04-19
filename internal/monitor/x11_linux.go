@@ -43,12 +43,19 @@ type x11 struct {
 
 var (
 	x11Once sync.Once
+	x11Mu   sync.RWMutex
 	x11Inst *x11
 )
 
 // getX11 returns the shared X connection, or nil if X is unavailable.
 // Callers MUST check for nil and degrade gracefully.
 func getX11() *x11 {
+	x11Mu.RLock()
+	inst := x11Inst
+	x11Mu.RUnlock()
+	if inst != nil {
+		return inst
+	}
 	x11Once.Do(func() {
 		conn, err := xgb.NewConn()
 		if err != nil {
@@ -75,9 +82,35 @@ func getX11() *x11 {
 		} else {
 			inst.haveScreensaver = true
 		}
+		x11Mu.Lock()
 		x11Inst = inst
+		x11Mu.Unlock()
 	})
+	x11Mu.RLock()
+	defer x11Mu.RUnlock()
 	return x11Inst
+}
+
+// CloseX11 closes the shared X connection and clears the atom cache.
+// Safe to call multiple times and safe to call if X was never
+// successfully initialized.
+//
+// Callers MUST ensure no goroutine is still making X calls when this
+// returns — typically invoke it only AFTER ActivityMonitor.Stop has
+// drained its goroutines. Any subsequent getX11() call will lazily
+// reconnect (supports recovery paths like X server restart, though no
+// current caller triggers that).
+func CloseX11() {
+	x11Mu.Lock()
+	defer x11Mu.Unlock()
+	if x11Inst == nil {
+		return
+	}
+	x11Inst.conn.Close()
+	x11Inst = nil
+	// Reset sync.Once so future getX11() calls retry the connection
+	// rather than reusing the nil cache.
+	x11Once = sync.Once{}
 }
 
 // atom resolves an EWMH atom name to its numeric ID, caching the result.

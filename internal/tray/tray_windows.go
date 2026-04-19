@@ -298,7 +298,20 @@ func (m *Manager) Start(done <-chan struct{}) {
 
 func (m *Manager) cleanup() {
 	pShellNotifyIcon.Call(NIM_DELETE, uintptr(unsafe.Pointer(&m.nid)))
+	// Release the two HICON handles (base + active-with-dot overlay).
+	// These are process-lifetime GDI handles — the OS will reclaim them
+	// at exit anyway, but a future "restart tray without restarting
+	// app" path would leak handles across every cycle without this.
+	// DestroyIcon is safe on 0 handles (no-op).
 	m.mu.Lock()
+	if m.baseIcon != 0 {
+		pDestroyIcon.Call(m.baseIcon)
+		m.baseIcon = 0
+	}
+	if m.activeIcon != 0 {
+		pDestroyIcon.Call(m.activeIcon)
+		m.activeIcon = 0
+	}
 	m.running = false
 	m.mu.Unlock()
 	log.Println("System tray stopped")

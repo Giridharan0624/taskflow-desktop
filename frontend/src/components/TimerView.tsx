@@ -99,7 +99,22 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
       .then((d: Attendance | null) => setAttendance(patchAttendance(d)))
       .catch(() => {});
     window.go.main.App.GetWebDashboardURL()
-      .then((u: string) => setDashboardURL(u))
+      .then((u: string) => {
+        // Validate scheme before rendering as href — the URL crosses
+        // the Wails IPC boundary from Go config and could carry a
+        // javascript:/data: scheme if a misconfigured build or
+        // compromised backend injected one. Anything that isn't an
+        // http(s) URL is silently dropped; the footer link simply
+        // won't render.
+        try {
+          const parsed = new URL(u);
+          if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+            setDashboardURL(u);
+          }
+        } catch {
+          // invalid URL — leave dashboardURL empty, banner won't show
+        }
+      })
       .catch(() => {});
     // Session capability probe — surfaces Wayland's per-app tracking
     // limit with an actionable message instead of letting the user

@@ -25,11 +25,14 @@ export function LoginForm({ onSuccess }: LoginFormProps) {
     setLoading(true);
     try {
       const result: LoginResult = await window.go.main.App.Login(email, password);
-      if (result.requiresNewPassword) { setChallengePending(true); setLoading(false); return; }
-      // Clear password out of state as soon as login succeeds — there
-      // is no legitimate reason to keep a plaintext password around
-      // after it has been accepted. See H-FE-2.
+      // Clear the password out of state immediately after the Cognito
+      // call returns — both on the happy path AND on the new-password
+      // challenge branch. The previous implementation only cleared on
+      // success, leaving the plaintext in React state for the entire
+      // challenge flow; a component unmount mid-challenge would keep
+      // the string retained until GC. See H-FE-2.
       setPassword("");
+      if (result.requiresNewPassword) { setChallengePending(true); setLoading(false); return; }
       onSuccess(await window.go.main.App.GetCurrentUser());
     } catch (err: any) {
       setError(friendlyError(err));

@@ -140,6 +140,10 @@ func (a *App) startup(ctx context.Context) {
 func (a *App) shutdown(ctx context.Context) {
 	a.stopBackgroundServices()
 	a.ActivityMonitor.Stop()
+	// Close the shared X11 connection (Linux) / no-op (Windows, macOS)
+	// now that every goroutine that could be holding it has drained.
+	// Safe on non-Linux because the build-tagged stub is a no-op.
+	monitor.CloseX11()
 	// Close the tray signal and stop the tray manager last, so any final
 	// balloon notifications from shutting services have already drained.
 	select {
@@ -197,6 +201,21 @@ func (a *App) startBackgroundServices() {
 		}()
 		a.pollAttendance(sctx)
 	}()
+}
+
+// currentSessionCtx returns the context scoped to the current login
+// session, or a.ctx if no session is active. Callers must use this
+// — NOT a.ctx — when starting per-session work (ActivityMonitor, any
+// goroutine that should die on logout). Passing a.ctx here used to
+// cause the monitor started during sign-in to survive logout,
+// leaking goroutines across re-login cycles.
+func (a *App) currentSessionCtx() context.Context {
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
+	if a.sessionCtx != nil {
+		return a.sessionCtx
+	}
+	return a.ctx
 }
 
 // stopBackgroundServices cancels the session context and waits for all
@@ -276,7 +295,12 @@ func (a *App) fetchAttendance() {
 
 	if timerActive {
 		a.TrayManager.SetTimerActive(true, attendance.CurrentTask)
-		a.ActivityMonitor.Start(a.ctx)
+		// Scope the monitor to the current LOGIN session, not the Wails
+		// app lifetime. Otherwise a monitor started during session A
+		// inherits a.ctx's cancellation (never fires during normal
+		// logout) and outlives the logout → re-login transition,
+		// duplicating goroutines on each cycle.
+		a.ActivityMonitor.Start(a.currentSessionCtx())
 	} else {
 		a.TrayManager.SetTimerActive(false, nil)
 		a.ActivityMonitor.Stop()
@@ -399,7 +423,9 @@ func (a *App) SignIn(data api.StartTimerData) (*api.Attendance, error) {
 
 	a.State.SetAttendance(attendance)
 	a.TrayManager.SetTimerActive(true, attendance.CurrentTask)
-	a.ActivityMonitor.Start(a.ctx) // Start monitoring when timer starts
+	// Scoped to the current login session, not the app lifetime. See
+	// currentSessionCtx() comment.
+	a.ActivityMonitor.Start(a.currentSessionCtx()) // Start monitoring when timer starts
 	runtime.EventsEmit(a.ctx, "attendance:updated", attendance)
 	return attendance, nil
 }
@@ -450,11 +476,18 @@ func (a *App) ShowWindow() {
 	log.Println("ShowWindow called")
 	runtime.WindowShow(a.ctx)
 	runtime.WindowUnminimise(a.ctx)
-	// Briefly set always-on-top to bring to front, then release
+	// Briefly set always-on-top to bring to front, then release. If the
+	// app is quitting during that 200ms window, observe the cancel and
+	// skip the final always-on-top(false) — runtime calls on a
+	// cancelled Wails context log errors.
 	runtime.WindowSetAlwaysOnTop(a.ctx, true)
 	go func() {
-		time.Sleep(200 * time.Millisecond)
-		runtime.WindowSetAlwaysOnTop(a.ctx, false)
+		select {
+		case <-time.After(200 * time.Millisecond):
+			runtime.WindowSetAlwaysOnTop(a.ctx, false)
+		case <-a.ctx.Done():
+			return
+		}
 	}()
 }
 

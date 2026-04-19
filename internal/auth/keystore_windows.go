@@ -189,7 +189,15 @@ func loadChunked(key string) (string, error) {
 	}
 
 	var count int
-	fmt.Sscanf(value, "CHUNKED:%d", &count)
+	// An error from Sscanf here (e.g. "CHUNKED:abc") used to leave
+	// count=0, skip the read loop, and propagate as a cryptic
+	// "unexpected end of JSON" when the caller unmarshaled "". Surface
+	// the real cause so callers can drop and re-authenticate instead of
+	// chasing a phantom JSON bug.
+	n, err := fmt.Sscanf(value, "CHUNKED:%d", &count)
+	if err != nil || n != 1 {
+		return "", fmt.Errorf("malformed chunk sentinel %q: %w", value, err)
+	}
 	if count <= 0 || count > 20 {
 		return "", fmt.Errorf("invalid chunk count: %d", count)
 	}
