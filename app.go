@@ -19,6 +19,7 @@ import (
 	"taskflow-desktop/internal/state"
 	"taskflow-desktop/internal/tray"
 	"taskflow-desktop/internal/updater"
+	"taskflow-desktop/internal/workspace"
 )
 
 // App is the main application struct. Methods bound to the frontend via Wails.
@@ -205,6 +206,44 @@ func (a *App) startBackgroundServices() {
 		}()
 		a.pollAttendance(sctx)
 	}()
+
+	// Phase 6: keep tenant settings (specifically `features.screenshots`)
+	// fresh while the session is active. The screenshot loop runs on a
+	// 10-minute tick and reads from this cache; refreshing on the same
+	// cadence means an OWNER toggling screenshots in the web app takes
+	// effect within one tick. Fail-closed semantics in the cache mean a
+	// transient fetch error never accidentally enables screenshots.
+	a.sessionWG.Add(1)
+	go func() {
+		defer a.sessionWG.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("refreshOrgSettings recovered from panic: %v", r)
+			}
+		}()
+		a.refreshOrgSettings(sctx)
+	}()
+}
+
+// refreshOrgSettings fetches /orgs/current/settings immediately and then
+// every 10 minutes until the session context is cancelled. Errors are
+// logged but never abort the loop — the cache retains its last value.
+func (a *App) refreshOrgSettings(ctx context.Context) {
+	if _, err := a.APIClient.GetOrgSettings(); err != nil {
+		log.Printf("initial settings fetch failed: %v", err)
+	}
+	t := time.NewTicker(10 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if _, err := a.APIClient.GetOrgSettings(); err != nil {
+				log.Printf("settings refresh failed: %v", err)
+			}
+		}
+	}
 }
 
 // currentSessionCtx returns the context scoped to the current login
@@ -481,6 +520,45 @@ func (a *App) GetCurrentUser() (*api.User, error) {
 		return nil, err
 	}
 	return a.APIClient.GetCurrentUser()
+}
+
+// GetWorkspace returns the saved workspace slug, or empty string if the
+// app has not been associated with a tenant yet (first launch). Called
+// by the frontend on mount to decide whether to show the first-run
+// workspace prompt or the login screen.
+//
+// Errors other than "no workspace" are surfaced so the UI can warn about
+// disk problems instead of looping the prompt.
+func (a *App) GetWorkspace() (string, error) {
+	slug, err := workspace.Load()
+	if err != nil {
+		if errors.Is(err, workspace.ErrNoWorkspace) {
+			return "", nil
+		}
+		return "", err
+	}
+	return slug, nil
+}
+
+// SetWorkspace persists the workspace slug. Called from the first-run
+// UI after the user types their workspace code. Validation lives in
+// workspace.Save — invalid input is rejected before disk I/O.
+func (a *App) SetWorkspace(slug string) error {
+	return workspace.Save(slug)
+}
+
+// ClearWorkspace removes the saved workspace, returning the user to
+// the first-run prompt on next launch. Used by the "Switch workspace"
+// affordance. Logs out the current session as a side effect — sticking
+// with a stale session for a different tenant would be a privacy bug.
+func (a *App) ClearWorkspace() error {
+	if a.State.IsAuthenticated() {
+		// Best effort: logout cleans up tokens + stops monitors. If it
+		// fails we still wipe the workspace file so a corrupted session
+		// can be recovered.
+		_ = a.Logout()
+	}
+	return workspace.Clear()
 }
 
 // ShowWindow restores the app window (called from tray).

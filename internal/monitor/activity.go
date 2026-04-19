@@ -349,6 +349,12 @@ func (m *ActivityMonitor) resetBucketLocked() {
 }
 
 // captureScreenshots takes a screenshot every 10 minutes while the timer is active.
+//
+// Phase 6: per-tenant feature gate. ScreenshotsEnabled() reads the cached
+// OrgSettings; on a tenant where features.screenshots is false (or
+// unknown — fail-closed) the tick is a no-op. The goroutine itself
+// stays alive so that toggling the setting later flips behavior on the
+// next tick without a restart.
 func (m *ActivityMonitor) captureScreenshots(ctx context.Context) {
 	ticker := time.NewTicker(ScreenshotInterval)
 	defer ticker.Stop()
@@ -359,6 +365,9 @@ func (m *ActivityMonitor) captureScreenshots(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if !m.appState.IsTimerActive() {
+				continue
+			}
+			if !m.apiClient.ScreenshotsEnabled() {
 				continue
 			}
 			m.takeAndUploadScreenshot(ctx)

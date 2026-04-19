@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-resty/resty/v2"
@@ -15,6 +16,7 @@ import (
 	"taskflow-desktop/internal/config"
 	"taskflow-desktop/internal/security"
 	"taskflow-desktop/internal/state"
+	"taskflow-desktop/internal/workspace"
 )
 
 // allowedUploadHosts is the host allowlist for presigned S3 upload URLs
@@ -74,6 +76,15 @@ type User struct {
 	Skills     []string `json:"skills"`
 }
 
+// OrgSettings is the desktop-relevant subset of the backend's
+// /orgs/current/settings response. The desktop only cares about feature
+// toggles (specifically `screenshots`) and the display name shown in the
+// tray tooltip; everything else is ignored.
+type OrgSettings struct {
+	DisplayName string          `json:"displayName"`
+	Features    map[string]bool `json:"features"`
+}
+
 // Client handles all API communication with the backend.
 type Client struct {
 	http        *resty.Client
@@ -85,6 +96,13 @@ type Client struct {
 	uploads     *resty.Client
 	authService *auth.Service
 	appState    *state.AppState
+
+	// settingsMu guards both fields below — the cache is read by the
+	// activity loop on every screenshot tick and written by RefreshSettings
+	// (called after login + periodically). Snapshot semantics: callers
+	// receive a copy, never a live pointer.
+	settingsMu sync.RWMutex
+	settings   *OrgSettings
 }
 
 // NewClient creates a new API client with HTTPS enforced and TLS 1.3 minimum.
@@ -141,14 +159,97 @@ func NewClient(authService *auth.Service, appState *state.AppState) *Client {
 }
 
 // request creates an authenticated request with auto-refreshed JWT.
+//
+// Adds the `x-org-slug` header when a workspace is configured. Backend
+// uses the JWT's `custom:orgId` claim for authorization — the slug header
+// is informational (used for log correlation and the optional WAF
+// rate-limit key in Phase 6) and is silently absent on legacy
+// pre-workspace builds.
 func (c *Client) request() (*resty.Request, error) {
 	token, err := c.authService.GetIDToken()
 	if err != nil {
 		return nil, fmt.Errorf("not authenticated: %w", err)
 	}
 
-	return c.http.R().
-		SetHeader("Authorization", "Bearer "+token), nil
+	req := c.http.R().SetHeader("Authorization", "Bearer "+token)
+	if slug, err := workspace.Load(); err == nil && slug != "" {
+		req = req.SetHeader("x-org-slug", slug)
+	}
+	return req, nil
+}
+
+// GetOrgSettings fetches /orgs/current/settings, refreshes the in-memory
+// cache, and returns the result. Used by the activity loop to honor
+// per-tenant feature toggles (specifically `screenshots`).
+//
+// On any error the previous cached value is preserved — a transient
+// network blip never flips the feature gate. Callers that need the
+// last-known good cache without a network round-trip use
+// CachedSettings() instead.
+func (c *Client) GetOrgSettings() (*OrgSettings, error) {
+	req, err := c.request()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := req.Get("/orgs/current/settings")
+	if err != nil {
+		return nil, fmt.Errorf("network error: %w", err)
+	}
+	if resp.StatusCode() != 200 {
+		return nil, apiError("fetch settings", resp)
+	}
+	converted, err := snakeToCamel(resp.Body())
+	if err != nil {
+		return nil, fmt.Errorf("settings response: %w", err)
+	}
+	var settings OrgSettings
+	if err := json.Unmarshal(converted, &settings); err != nil {
+		return nil, fmt.Errorf("failed to parse settings: %w", err)
+	}
+	c.settingsMu.Lock()
+	c.settings = &settings
+	c.settingsMu.Unlock()
+	return &settings, nil
+}
+
+// CachedSettings returns the last successfully fetched settings, or nil
+// if none has been fetched yet. Returns a defensive copy of the Features
+// map so the caller can iterate without holding the lock.
+func (c *Client) CachedSettings() *OrgSettings {
+	c.settingsMu.RLock()
+	defer c.settingsMu.RUnlock()
+	if c.settings == nil {
+		return nil
+	}
+	cp := &OrgSettings{
+		DisplayName: c.settings.DisplayName,
+		Features:    make(map[string]bool, len(c.settings.Features)),
+	}
+	for k, v := range c.settings.Features {
+		cp.Features[k] = v
+	}
+	return cp
+}
+
+// ScreenshotsEnabled is the canonical check the activity loop runs
+// before each screenshot tick.
+//
+// Fail-closed: if no settings have been fetched yet, screenshots are
+// suppressed. This matches the privacy contract — never capture without
+// having confirmed the tenant opted in.
+func (c *Client) ScreenshotsEnabled() bool {
+	c.settingsMu.RLock()
+	defer c.settingsMu.RUnlock()
+	if c.settings == nil {
+		return false
+	}
+	enabled, ok := c.settings.Features["screenshots"]
+	if !ok {
+		// Settings loaded but the key is absent — treat as disabled so a
+		// new tenant who has not explicitly opted in stays opted out.
+		return false
+	}
+	return enabled
 }
 
 // GetMyAttendance fetches GET /attendance/me.
