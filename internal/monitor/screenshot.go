@@ -3,7 +3,6 @@ package monitor
 import (
 	"bytes"
 	"fmt"
-	"image"
 	"image/jpeg"
 	"log"
 
@@ -63,6 +62,17 @@ func (sc *ScreenshotCapture) IsScreenLocked() bool {
 //   - Windows: DXGI Desktop Duplication (GPU-friendly, no BitBlt)
 //   - Linux: X11 XGetImage
 //   - macOS: CoreGraphics CGWindowListCreateImage
+//
+// Previously this nearest-neighbour-downscaled to 50% and JPEG-
+// compressed at quality 60 — intended as a file-size optimisation
+// but it made on-screen text unreadable in the activity-report
+// viewer (a reviewer checking whether the user was on the right
+// task could not tell one IDE window from another). The
+// 2 MB uploads it now produces at native 1920×1080 JPEG-q85 sit
+// well inside the S3 upload client's 3-minute timeout (M-API-2
+// already bumped that) and a typical 8-hour day at one screenshot
+// per 10 min is ~48 × 2 MB = ~100 MB — acceptable for the use case
+// (activity monitoring, not frame-by-frame video).
 func (sc *ScreenshotCapture) CaptureScreen(quality int) ([]byte, error) {
 	if sc.IsScreenLocked() {
 		return nil, fmt.Errorf("screen is locked")
@@ -84,41 +94,26 @@ func (sc *ScreenshotCapture) CaptureScreen(quality int) ([]byte, error) {
 	w := bounds.Dx()
 	h := bounds.Dy()
 
-	// Scale down to 50% for smaller file size
-	scaledW := w / 2
-	scaledH := h / 2
-	scaled := image.NewRGBA(image.Rect(0, 0, scaledW, scaledH))
-	for y := 0; y < scaledH; y++ {
-		for x := 0; x < scaledW; x++ {
-			srcX := x * 2
-			srcY := y * 2
-			srcIdx := (srcY*img.Stride) + srcX*4
-			dstIdx := (y*scaled.Stride) + x*4
-			if srcIdx+3 < len(img.Pix) && dstIdx+3 < len(scaled.Pix) {
-				scaled.Pix[dstIdx+0] = img.Pix[srcIdx+0]
-				scaled.Pix[dstIdx+1] = img.Pix[srcIdx+1]
-				scaled.Pix[dstIdx+2] = img.Pix[srcIdx+2]
-				scaled.Pix[dstIdx+3] = 255
-			}
-		}
-	}
-
-	// Encode to JPEG
+	// Encode to JPEG at native resolution.
 	var buf bytes.Buffer
-	err = jpeg.Encode(&buf, scaled, &jpeg.Options{Quality: quality})
+	err = jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality})
 	if err != nil {
 		return nil, fmt.Errorf("JPEG encode failed: %w", err)
 	}
 
-	log.Printf("Screenshot captured: %dx%d → %dx%d, %d KB JPEG",
-		w, h, scaledW, scaledH, buf.Len()/1024)
+	log.Printf("Screenshot captured: %dx%d native, %d KB JPEG", w, h, buf.Len()/1024)
 
 	return buf.Bytes(), nil
 }
 
-// CaptureScreenDefault takes a screenshot with default quality (60).
+// CaptureScreenDefault takes a screenshot at the default quality.
+// 85 is the sweet spot for JPEG — subjectively indistinguishable from
+// q100 for photographic content, ~2–3× smaller file than q95 for
+// screenshots that contain text. Raised from 60 because the old
+// setting visibly softened on-screen UI text (the reviewer's main
+// signal when auditing activity reports).
 func (sc *ScreenshotCapture) CaptureScreenDefault() ([]byte, error) {
-	return sc.CaptureScreen(60)
+	return sc.CaptureScreen(85)
 }
 
 // ShowNotification logs a notification (actual display is via tray balloon in activity.go).
