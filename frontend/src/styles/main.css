@@ -108,6 +108,17 @@
     color-scheme: dark;
   }
 
+  /* Lock the document to exactly the Wails window. Without this the
+     default 8 px body margin + an h-screen (=100vh) child spilled
+     past the window, causing the whole page to scroll and the
+     internal flex-1 overflow-y-auto region to never kick in. */
+  html, body, #app {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+  }
+
   body {
     @apply bg-background text-foreground;
     font-size: 13px;

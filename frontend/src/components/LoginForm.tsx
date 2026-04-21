@@ -66,7 +66,7 @@ export function LoginForm({ onSuccess }: LoginFormProps) {
   }
 
   return (
-    <div class="flex flex-col h-screen bg-background">
+    <div class="flex flex-col h-full bg-background">
       {/* Top bar with theme toggle */}
       <div class="flex items-center justify-end px-3 py-2">
         <Button

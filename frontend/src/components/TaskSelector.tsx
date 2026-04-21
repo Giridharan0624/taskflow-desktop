@@ -204,7 +204,14 @@ function Dropdown({
       {open && (
         <div
           role="listbox"
-          class="absolute z-50 mt-1 w-full rounded-md border border-border bg-popover text-popover-foreground shadow-md overflow-hidden max-h-44 overflow-y-auto"
+          // The TaskSelector lives in the bottom strip of a 500 px
+          // window, so opening downward (mt-1) puts the menu below
+          // the footer where it gets visually clipped. Opening
+          // UPWARD (bottom-full + mb-1) keeps the whole list inside
+          // the viewport regardless of how many projects/tasks the
+          // user has. max-h-44 caps the height so a huge list still
+          // scrolls internally.
+          class="absolute z-50 bottom-full mb-1 w-full rounded-md border border-border bg-popover text-popover-foreground shadow-lg overflow-hidden max-h-44 overflow-y-auto"
         >
           {options.length === 0 ? (
             <div class="px-3 py-2 text-xs text-muted-foreground">No options</div>
@@ -251,6 +258,9 @@ function Dropdown({
 /* ═══ Icons ═══ */
 
 function ChevronIcon({ open }: { open: boolean }) {
+  // Base glyph points DOWN; when the menu opens upward, rotate so
+  // the indicator tracks the menu's actual direction — a user who
+  // sees a "v" expects the menu below; when "^" the menu is above.
   return (
     <svg
       class={cn(
