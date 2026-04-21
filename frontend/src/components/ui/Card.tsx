@@ -1,7 +1,7 @@
-import type { JSX, ComponentChildren } from "preact"
+import type { JSX } from "preact"
 import { cn } from "../../lib/cn"
 
-type DivProps = JSX.HTMLAttributes<HTMLDivElement> & { children?: ComponentChildren }
+type DivProps = JSX.IntrinsicElements["div"]
 
 export function Card({ className, children, ...rest }: DivProps) {
   return (

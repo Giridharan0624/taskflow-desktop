@@ -2,7 +2,10 @@ import type { JSX } from "preact"
 import { forwardRef } from "preact/compat"
 import { cn } from "../../lib/cn"
 
-type InputProps = JSX.HTMLAttributes<HTMLInputElement>
+// JSX.IntrinsicElements['input'] carries element-specific attrs
+// (type, autoComplete, min, max, step, etc.); JSX.HTMLAttributes
+// would drop those.
+type InputProps = JSX.IntrinsicElements["input"]
 
 export const Input = forwardRef<HTMLInputElement, InputProps>(
   ({ className, ...rest }, ref) => {

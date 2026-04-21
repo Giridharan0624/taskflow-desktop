@@ -1,11 +1,10 @@
-import type { JSX, ComponentChildren } from "preact"
+import type { JSX } from "preact"
 import { cn } from "../../lib/cn"
 
 type Variant = "default" | "secondary" | "destructive" | "outline" | "success" | "warning"
 
-interface BadgeProps extends JSX.HTMLAttributes<HTMLDivElement> {
+type BadgeProps = JSX.IntrinsicElements["div"] & {
   variant?: Variant
-  children?: ComponentChildren
 }
 
 // "success" and "warning" aren't in vanilla shadcn but this app has

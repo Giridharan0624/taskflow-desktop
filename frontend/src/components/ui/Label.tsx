@@ -1,9 +1,9 @@
-import type { JSX, ComponentChildren } from "preact"
+import type { JSX } from "preact"
 import { cn } from "../../lib/cn"
 
-interface LabelProps extends JSX.HTMLAttributes<HTMLLabelElement> {
-  children?: ComponentChildren
-}
+// JSX.IntrinsicElements['label'] carries `for` / `htmlFor`; the
+// generic JSX.HTMLAttributes<HTMLLabelElement> does not.
+type LabelProps = JSX.IntrinsicElements["label"]
 
 export function Label({ className, children, ...rest }: LabelProps) {
   return (

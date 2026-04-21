@@ -1,13 +1,14 @@
-import type { JSX, ComponentChildren } from "preact"
+import type { JSX } from "preact"
 import { cn } from "../../lib/cn"
 
 type Variant = "default" | "destructive" | "outline" | "secondary" | "ghost" | "link"
 type Size = "default" | "sm" | "lg" | "icon"
 
-interface ButtonProps extends Omit<JSX.HTMLAttributes<HTMLButtonElement>, "size"> {
+// Use JSX.IntrinsicElements['button'] — Preact's JSX.HTMLAttributes is
+// generic/narrow and doesn't carry element-specific attrs like `type`.
+type ButtonProps = Omit<JSX.IntrinsicElements["button"], "size"> & {
   variant?: Variant
   size?: Size
-  children?: ComponentChildren
 }
 
 // Base classes applied to every variant. focus-visible ring is the
