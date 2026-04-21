@@ -14,7 +14,6 @@ import { useTheme } from "../lib/useTheme";
 import { friendlyError } from "../lib/errors";
 import { Button } from "./ui/Button";
 import { Card } from "./ui/Card";
-import { MarqueeText } from "./ui/MarqueeText";
 import { cn } from "../lib/cn";
 
 interface TimerViewProps {
@@ -277,24 +276,37 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
               />
             )}
 
-            {/* Task info — marquees when text exceeds the card width */}
-            <div class="mt-2.5 px-2">
-              <MarqueeText class="text-sm font-semibold text-foreground">
-                {cur?.taskTitle || "Working"}
-              </MarqueeText>
-            </div>
-            {(cur?.projectName || curSess?.description) && (
-              <div class="px-2 mt-0.5">
-                <MarqueeText class="text-[11px] text-muted-foreground">
-                  {[
-                    cur?.projectName,
-                    curSess?.description && `· ${curSess.description}`,
-                  ]
-                    .filter(Boolean)
-                    .join(" ")}
-                </MarqueeText>
-              </div>
-            )}
+            {/* Task info. Plain truncate + native title tooltip so the
+                whole string is reachable on hover, without the visual
+                noise (or the double-copy artefacts) that the earlier
+                marquee introduced. */}
+            {(() => {
+              const title = cur?.taskTitle || "Working";
+              const meta = [
+                cur?.projectName,
+                curSess?.description && `· ${curSess.description}`,
+              ]
+                .filter(Boolean)
+                .join(" ");
+              return (
+                <>
+                  <p
+                    class="text-sm font-semibold mt-2.5 truncate text-foreground px-2"
+                    title={title}
+                  >
+                    {title}
+                  </p>
+                  {meta && (
+                    <p
+                      class="text-[11px] truncate text-muted-foreground mt-0.5 px-2"
+                      title={meta}
+                    >
+                      {meta}
+                    </p>
+                  )}
+                </>
+              );
+            })()}
 
             {/* Stop Timer */}
             <Button
@@ -570,18 +582,28 @@ function TaskRow({ task, onResume, loading }: { task: GroupedTask; onResume: () 
         </svg>
       </div>
       <div class="min-w-0 flex-1">
-        <MarqueeText class="text-xs font-medium leading-tight text-foreground">
+        <p
+          class="text-xs font-medium truncate leading-tight text-foreground"
+          title={task.taskTitle}
+        >
           {task.taskTitle}
-        </MarqueeText>
-        <MarqueeText class="text-[10px] leading-tight text-muted-foreground mt-0.5">
-          {[
+        </p>
+        <p
+          class="text-[10px] truncate leading-tight text-muted-foreground mt-0.5"
+          title={[
             task.projectName,
-            task.description && task.description !== task.taskTitle && `· ${task.description}`,
-            `· ${task.sessionCount}×`,
+            task.description && task.description !== task.taskTitle ? task.description : null,
+            `${task.sessionCount} sessions`,
           ]
             .filter(Boolean)
-            .join(" ")}
-        </MarqueeText>
+            .join(" · ")}
+        >
+          {task.projectName}
+          {task.description && task.description !== task.taskTitle && (
+            <span class="italic"> · {task.description}</span>
+          )}
+          <span class="opacity-70"> · {task.sessionCount}×</span>
+        </p>
       </div>
       <span
         class={cn(
