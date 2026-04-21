@@ -1,5 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from "preact/hooks";
 import type { Task, StartTimerData } from "../app";
+import { Button } from "./ui/Button";
+import { Input } from "./ui/Input";
+import { cn } from "../lib/cn";
 
 interface TaskSelectorProps {
   onStart: (data: StartTimerData) => void;
@@ -76,17 +79,14 @@ export function TaskSelector({ onStart, loading }: TaskSelectorProps) {
 
   return (
     <div class="space-y-2">
-      {/* Description */}
-      <input
+      <Input
         type="text"
-        class="input"
         placeholder="What are you working on?"
         value={description}
         maxLength={500}
         onInput={(e) => setDescription((e.target as HTMLInputElement).value)}
       />
 
-      {/* Project + Task dropdowns */}
       <div class="flex gap-1.5">
         <Dropdown
           value={selectedSource}
@@ -107,26 +107,32 @@ export function TaskSelector({ onStart, loading }: TaskSelectorProps) {
         )}
       </div>
 
-      {fetchError && <p class="text-[10px]" style={{ color: "var(--color-danger, #ef4444)" }}>{fetchError}</p>}
+      {fetchError && (
+        <p role="alert" class="text-[10px] text-destructive">
+          {fetchError}
+        </p>
+      )}
 
-      {/* Buttons */}
       <div class="flex gap-1.5">
-        <button
+        <Button
           type="button"
-          class="btn-primary flex-1 !py-1.5"
+          size="sm"
+          class="flex-1 h-8"
           disabled={loading || !canStartTask}
           onClick={handleStartTask}
         >
-          {loading ? "..." : "Start"}
-        </button>
-        <button
+          {loading ? "…" : "Start"}
+        </Button>
+        <Button
           type="button"
-          class="btn-meeting flex-1 !py-1.5"
+          variant="secondary"
+          size="sm"
+          class="flex-1 h-8"
           disabled={loading || !description}
           onClick={handleMeeting}
         >
           Meeting
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -170,61 +176,58 @@ function Dropdown({
 
   return (
     <div class="relative flex-1" ref={ref}>
-      {/* Trigger */}
       <button
         type="button"
-        class="w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[12px] text-left transition-all"
-        style={{
-          background: "var(--color-surface)",
-          border: open ? "1px solid var(--color-primary)" : "1px solid var(--color-border)",
-          boxShadow: open ? "0 0 0 3px rgba(99, 102, 241, 0.12)" : "none",
-          color: selected ? "var(--color-text)" : "var(--color-text-muted)",
-        }}
+        class={cn(
+          "w-full flex items-center gap-1.5 px-2.5 h-8 rounded-md text-xs text-left",
+          "bg-background border transition-colors",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+          open ? "border-primary ring-2 ring-ring ring-offset-2 ring-offset-background" : "border-input",
+          selected ? "text-foreground" : "text-muted-foreground",
+        )}
         onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        aria-haspopup="listbox"
       >
-        {icon && <span style={{ color: "var(--color-text-muted)", flexShrink: 0 }}>{icon}</span>}
+        {icon && <span class="flex-shrink-0 text-muted-foreground">{icon}</span>}
         <span class="flex-1 truncate">{selected ? selected.label : placeholder}</span>
         <ChevronIcon open={open} />
       </button>
 
-      {/* Dropdown list */}
       {open && (
         <div
-          class="absolute z-50 mt-1 w-full rounded-xl overflow-hidden"
-          style={{
-            background: "var(--color-surface)",
-            border: "1px solid var(--color-border)",
-            boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
-            maxHeight: 180,
-            overflowY: "auto",
-          }}
+          role="listbox"
+          class="absolute z-50 mt-1 w-full rounded-md border border-border bg-popover text-popover-foreground shadow-md overflow-hidden max-h-44 overflow-y-auto"
         >
           {options.length === 0 ? (
-            <div class="px-3 py-2 text-[11px]" style={{ color: "var(--color-text-muted)" }}>
-              No options
-            </div>
+            <div class="px-3 py-2 text-xs text-muted-foreground">No options</div>
           ) : (
             options.map((opt) => (
               <button
                 key={opt.value}
+                role="option"
                 type="button"
-                class="w-full text-left px-3 py-2 text-[12px] transition-colors"
-                style={{
-                  color: opt.value === value ? "var(--color-primary)" : "var(--color-text)",
-                  background: opt.value === value ? "var(--color-primary-light)" : "transparent",
+                aria-selected={opt.value === value}
+                class={cn(
+                  "w-full text-left px-3 py-1.5 text-xs transition-colors",
+                  "focus-visible:outline-none focus-visible:bg-accent focus-visible:text-accent-foreground",
+                  opt.value === value
+                    ? "bg-primary/10 text-primary"
+                    : "text-foreground hover:bg-accent hover:text-accent-foreground",
+                )}
+                onClick={() => {
+                  onChange(opt.value);
+                  setOpen(false);
                 }}
-                onMouseEnter={(e) => {
-                  if (opt.value !== value) (e.currentTarget as HTMLElement).style.background = "var(--color-surface-hover)";
-                }}
-                onMouseLeave={(e) => {
-                  (e.currentTarget as HTMLElement).style.background = opt.value === value ? "var(--color-primary-light)" : "transparent";
-                }}
-                onClick={() => { onChange(opt.value); setOpen(false); }}
               >
                 <div class="flex items-center gap-2">
                   {opt.value === value && (
                     <svg class="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                      <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                      <path
+                        fill-rule="evenodd"
+                        d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                        clip-rule="evenodd"
+                      />
                     </svg>
                   )}
                   <span class="truncate">{opt.label}</span>
@@ -243,9 +246,14 @@ function Dropdown({
 function ChevronIcon({ open }: { open: boolean }) {
   return (
     <svg
-      class="w-3 h-3 flex-shrink-0 transition-transform"
-      style={{ transform: open ? "rotate(180deg)" : "rotate(0)", color: "var(--color-text-muted)" }}
-      fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"
+      class={cn(
+        "w-3 h-3 flex-shrink-0 text-muted-foreground transition-transform",
+        open && "rotate-180",
+      )}
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      stroke-width="2.5"
     >
       <path d="M19 9l-7 7-7-7" stroke-linecap="round" stroke-linejoin="round" />
     </svg>
@@ -255,7 +263,11 @@ function ChevronIcon({ open }: { open: boolean }) {
 function ProjectIcon() {
   return (
     <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
-      <path stroke-linecap="round" stroke-linejoin="round" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7" />
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7"
+      />
     </svg>
   );
 }
@@ -263,7 +275,11 @@ function ProjectIcon() {
 function TaskIcon() {
   return (
     <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
-      <path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"
+      />
     </svg>
   );
 }
