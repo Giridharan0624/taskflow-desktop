@@ -79,7 +79,7 @@ export function TaskSelector({ onStart, loading }: TaskSelectorProps) {
   const canStartTask = description.trim().length > 0 && selectedTaskId;
 
   return (
-    <div class="space-y-2">
+    <div class="w-full space-y-2 min-w-0">
       <Input
         type="text"
         placeholder="What are you working on?"
@@ -88,7 +88,7 @@ export function TaskSelector({ onStart, loading }: TaskSelectorProps) {
         onInput={(e) => setDescription((e.target as HTMLInputElement).value)}
       />
 
-      <div class="flex gap-1.5">
+      <div class="flex gap-2 min-w-0">
         <Dropdown
           value={selectedSource}
           placeholder="Select Project"
@@ -182,7 +182,13 @@ function Dropdown({
   }, [open]);
 
   return (
-    <div class="relative flex-1" ref={ref}>
+    // min-w-0 is mandatory here. flex-1 alone defaults to
+    // min-width:auto (= content width), so a dropdown containing a
+    // long label like "Update Figma component" refuses to shrink and
+    // pushes its sibling + itself past the window's right edge. With
+    // min-w-0, flex-1 actually shares space equally and the
+    // trigger's own `truncate` / marquee takes over.
+    <div class="relative flex-1 min-w-0" ref={ref}>
       <button
         type="button"
         class={cn(
