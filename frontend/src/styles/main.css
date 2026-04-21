@@ -2,9 +2,44 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Design tokens — shadcn/ui's HSL variable system layered on top of
+ * the pre-existing --color-* vars that earlier components use. The
+ * two sets stay in sync so a mid-migration TimerView (half old, half
+ * new) renders coherently.
+ *
+ * shadcn tokens are declared as SPACE-SEPARATED HSL triples (no
+ * surrounding hsl(), no commas) so Tailwind can combine them with
+ * opacity modifiers: bg-primary/50, text-foreground/70, etc.
+ */
 @layer base {
-  /* ── Light Theme — matches web app exactly ── */
+  /* ── Light Theme ── */
   :root {
+    /* shadcn tokens (new) */
+    --background:          240 9% 97%;   /* neutral-50 equiv */
+    --foreground:          240 10% 3.9%;
+    --card:                0 0% 100%;
+    --card-foreground:     240 10% 3.9%;
+    --popover:             0 0% 100%;
+    --popover-foreground:  240 10% 3.9%;
+    --primary:             239 84% 67%;  /* indigo-500 preserved */
+    --primary-foreground:  0 0% 100%;
+    --secondary:           240 5% 96%;
+    --secondary-foreground:240 6% 10%;
+    --muted:               240 5% 96%;
+    --muted-foreground:    240 4% 46%;
+    --accent:              240 5% 96%;
+    --accent-foreground:   240 6% 10%;
+    --destructive:         0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border:              240 6% 90%;
+    --input:               240 6% 90%;
+    --ring:                239 84% 67%;
+    --radius:              0.5rem;
+
+    /* legacy --color-* tokens, kept in lock-step with the shadcn
+       ones above so any component that still references them
+       renders with the same palette mid-migration. */
     --color-bg: #f6f6f9;
     --color-surface: #ffffff;
     --color-surface-hover: #f9f9fc;
@@ -27,8 +62,29 @@
     --shadow-card: 0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.03);
   }
 
-  /* ── Dark Theme — matches web app exactly ── */
+  /* ── Dark Theme ── */
   .dark {
+    --background:          240 10% 3.9%;
+    --foreground:          0 0% 98%;
+    --card:                240 7% 10%;
+    --card-foreground:     0 0% 98%;
+    --popover:             240 7% 10%;
+    --popover-foreground:  0 0% 98%;
+    --primary:             234 89% 74%;  /* indigo-400 for dark */
+    --primary-foreground:  240 6% 10%;
+    --secondary:           240 4% 16%;
+    --secondary-foreground:0 0% 98%;
+    --muted:               240 4% 16%;
+    --muted-foreground:    240 5% 65%;
+    --accent:              240 4% 16%;
+    --accent-foreground:   0 0% 98%;
+    --destructive:         0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border:              240 4% 16%;
+    --input:               240 4% 16%;
+    --ring:                234 89% 74%;
+
+    /* legacy --color-* tokens (dark) */
     --color-bg: #0f1117;
     --color-surface: #191b24;
     --color-surface-hover: #1f222c;
@@ -53,8 +109,7 @@
   }
 
   body {
-    background: var(--color-bg);
-    color: var(--color-text);
+    @apply bg-background text-foreground;
     font-size: 13px;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
@@ -63,12 +118,30 @@
     transition: background 0.15s, color 0.15s;
   }
 
+  /* Focus-visible ring on every interactive element — a11y win from
+     shadcn's conventions. :focus (without -visible) is noisy when
+     clicking; :focus-visible only shows on keyboard nav. */
+  *:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+  /* Don't double-up: explicit ring utility wins over the global rule. */
+  .focus-ring:focus-visible {
+    outline: none;
+    @apply ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+
   ::-webkit-scrollbar { width: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 999px; }
-  ::-webkit-scrollbar-thumb:hover { background: var(--color-text-muted); }
+  ::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 999px; }
+  ::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground)); }
 }
 
+/*
+ * Legacy component classes — kept unchanged so any file that hasn't
+ * been migrated yet still works. New code imports <Button>, <Input>,
+ * <Card> etc. from src/components/ui/ instead of these.
+ */
 @layer components {
   .btn-primary {
     @apply px-4 py-2 rounded-xl font-semibold text-[13px] text-white transition-all
