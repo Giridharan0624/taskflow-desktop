@@ -14,6 +14,7 @@ import { useTheme } from "../lib/useTheme";
 import { friendlyError } from "../lib/errors";
 import { Button } from "./ui/Button";
 import { Card } from "./ui/Card";
+import { MarqueeText } from "./ui/MarqueeText";
 import { cn } from "../lib/cn";
 
 interface TimerViewProps {
@@ -276,17 +277,23 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
               />
             )}
 
-            {/* Task info */}
-            <p class="text-sm font-semibold mt-2.5 truncate text-foreground px-2">
-              {cur?.taskTitle || "Working"}
-            </p>
+            {/* Task info — marquees when text exceeds the card width */}
+            <div class="mt-2.5 px-2">
+              <MarqueeText class="text-sm font-semibold text-foreground">
+                {cur?.taskTitle || "Working"}
+              </MarqueeText>
+            </div>
             {(cur?.projectName || curSess?.description) && (
-              <p class="text-[11px] truncate text-muted-foreground mt-0.5 px-2">
-                {cur?.projectName}
-                {curSess?.description && (
-                  <span class="italic"> · {curSess.description}</span>
-                )}
-              </p>
+              <div class="px-2 mt-0.5">
+                <MarqueeText class="text-[11px] text-muted-foreground">
+                  {[
+                    cur?.projectName,
+                    curSess?.description && `· ${curSess.description}`,
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                </MarqueeText>
+              </div>
             )}
 
             {/* Stop Timer */}
@@ -563,14 +570,18 @@ function TaskRow({ task, onResume, loading }: { task: GroupedTask; onResume: () 
         </svg>
       </div>
       <div class="min-w-0 flex-1">
-        <p class="text-xs font-medium truncate leading-tight text-foreground">{task.taskTitle}</p>
-        <p class="text-[10px] truncate leading-tight text-muted-foreground mt-0.5">
-          {task.projectName}
-          {task.description && task.description !== task.taskTitle && (
-            <span class="italic"> · {task.description}</span>
-          )}
-          <span class="opacity-70"> · {task.sessionCount}×</span>
-        </p>
+        <MarqueeText class="text-xs font-medium leading-tight text-foreground">
+          {task.taskTitle}
+        </MarqueeText>
+        <MarqueeText class="text-[10px] leading-tight text-muted-foreground mt-0.5">
+          {[
+            task.projectName,
+            task.description && task.description !== task.taskTitle && `· ${task.description}`,
+            `· ${task.sessionCount}×`,
+          ]
+            .filter(Boolean)
+            .join(" ")}
+        </MarqueeText>
       </div>
       <span
         class={cn(

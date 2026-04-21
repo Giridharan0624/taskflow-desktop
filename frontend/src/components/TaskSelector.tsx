@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from "preact/hooks";
 import type { Task, StartTimerData } from "../app";
 import { Button } from "./ui/Button";
 import { Input } from "./ui/Input";
+import { MarqueeText } from "./ui/MarqueeText";
 import { cn } from "../lib/cn";
 
 interface TaskSelectorProps {
@@ -197,7 +198,13 @@ function Dropdown({
         aria-haspopup="listbox"
       >
         {icon && <span class="flex-shrink-0 text-muted-foreground">{icon}</span>}
-        <span class="flex-1 truncate">{selected ? selected.label : placeholder}</span>
+        <span class="flex-1 min-w-0">
+          {selected ? (
+            <MarqueeText>{selected.label}</MarqueeText>
+          ) : (
+            <span class="truncate">{placeholder}</span>
+          )}
+        </span>
         <ChevronIcon open={open} />
       </button>
 

@@ -70,6 +70,11 @@ export default {
         "slide-up": "slide-up 0.3s ease-out",
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
+        // MarqueeText drives the duration via the --mq-dur CSS var so
+        // the same utility class works for any text length. Linear
+        // easing + infinite so overflow text scrolls at a constant
+        // readable pace.
+        marquee: "marquee var(--mq-dur, 15s) linear infinite",
       },
       keyframes: {
         "fade-in": {
@@ -87,6 +92,14 @@ export default {
         "accordion-up": {
           from: { height: "var(--radix-accordion-content-height)" },
           to: { height: 0 },
+        },
+        // One full translation == one text-copy width + the gap. The
+        // MarqueeText component renders two copies with a visible gap
+        // (gap-8 = 2 rem) so when the first copy scrolls off-left the
+        // second copy is already where the first started — seamless loop.
+        marquee: {
+          from: { transform: "translateX(0)" },
+          to: { transform: "translateX(calc(-50% - 1rem))" },
         },
       },
     },
