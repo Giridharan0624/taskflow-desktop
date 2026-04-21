@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -183,6 +184,15 @@ type Manager struct {
 	baseIcon    uintptr // Original app icon
 	activeIcon  uintptr // Icon with green recording dot
 
+	// stopped is closed by Start immediately after cleanup() returns.
+	// Stop blocks on it so the caller — typically app.go's OnQuit
+	// goroutine, which calls runtime.Quit right after — doesn't tear
+	// the process down before NIM_DELETE has removed the tray icon.
+	// Without this, Windows leaves a zombie icon in the system tray
+	// until the user hovers the notification area and the OS sweeps
+	// stale entries. Fixes "unable to close the app" / tray-ghost bug.
+	stopped chan struct{}
+
 	// pendingBalloon is set by ShowBalloon and consumed by the
 	// WM_APP_SHOW_BALLOON handler inside trayWndProc. The handler
 	// runs on the window-owning thread, so Shell_NotifyIcon is always
@@ -223,8 +233,27 @@ func (m *Manager) Start(done <-chan struct{}) {
 		return
 	}
 	m.running = true
+	m.stopped = make(chan struct{})
 	globalManager.Store(m)
 	m.mu.Unlock()
+
+	// Close stopped on ANY exit from this function — including panics —
+	// so Stop's Wait never hangs forever if something blows up during
+	// window creation or the message loop.
+	defer func() {
+		m.mu.Lock()
+		ch := m.stopped
+		m.mu.Unlock()
+		if ch != nil {
+			select {
+			case <-ch:
+				// Already closed (Stop may have been called during
+				// cleanup, depending on OS scheduling).
+			default:
+				close(ch)
+			}
+		}
+	}()
 
 	// Register window class
 	className, _ := syscall.UTF16PtrFromString("TaskFlowTrayClass")
@@ -317,18 +346,42 @@ func (m *Manager) cleanup() {
 	log.Println("System tray stopped")
 }
 
-// Stop asks the tray message loop to exit. Idempotent and safe to call
-// from any goroutine. Posts WM_CLOSE, which flows through DefWindowProc →
-// DestroyWindow → WM_DESTROY → PostQuitMessage(0) → GetMessage returns 0.
-// The actual m.running=false flip happens in cleanup() once the loop has
-// drained, not here — Stop only signals.
+// Stop asks the tray message loop to exit and BLOCKS until the loop
+// has actually drained + cleanup() has removed the tray icon via
+// NIM_DELETE. Idempotent and safe to call from any goroutine.
+//
+// Blocking is the key detail: the previous implementation just posted
+// WM_CLOSE and returned immediately. The caller (app.go's OnQuit
+// goroutine) would then call runtime.Quit, which tears the process
+// down before the tray goroutine had a chance to NIM_DELETE. Windows
+// leaves the orphaned icon in the system tray until the user hovers
+// the notification area (stale-icon sweep). Users see "app closed but
+// its tray icon is still there and unclickable."
+//
+// Bounded with a 3 s timeout so a wedged message loop can't prevent
+// shutdown indefinitely. If we hit the timeout the icon may still
+// ghost, but process teardown proceeds — better than hanging.
 func (m *Manager) Stop() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if !m.running || m.hwnd == 0 {
+		m.mu.Unlock()
 		return
 	}
-	pPostMessage.Call(m.hwnd, WM_CLOSE, 0, 0)
+	hwnd := m.hwnd
+	stopped := m.stopped
+	m.mu.Unlock()
+
+	pPostMessage.Call(hwnd, WM_CLOSE, 0, 0)
+
+	if stopped == nil {
+		return
+	}
+	select {
+	case <-stopped:
+		// Message loop exited + cleanup ran.
+	case <-time.After(3 * time.Second):
+		log.Println("tray: Stop timed out waiting for message loop; icon may ghost")
+	}
 }
 
 // ShowBalloon displays a Windows notification balloon from the tray icon.
