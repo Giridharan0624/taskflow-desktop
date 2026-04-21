@@ -182,10 +182,26 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
     if (!navigator.onLine) { setError("No internet connection."); return; }
     setLoading(true);
     setError("");
+    // Optimistic stamp covers ONLY the moment between click and the
+    // server's SignIn response — typically 100 ms – 2 s. The instant
+    // the server comes back with its canonical signInAt we clear the
+    // stamp and all downstream renders use the server's value, so
+    // this desktop shows the same "elapsed" as the web app (which
+    // pulls that same server signInAt on its poll).
+    //
+    // Before this change the stamp persisted for the entire session
+    // and every subsequent poll was patched with the click-time; two
+    // clients therefore showed times that drifted by the sign-in
+    // RTT. For short sessions the drift was invisible; for users
+    // running the desktop app for the full day it compounded into
+    // minutes.
     const t0 = new Date().toISOString();
-    _optimisticSignInAt = t0; // Persist across polling updates
+    _optimisticSignInAt = t0;
     try {
       const r = await window.go.main.App.SignIn(data);
+      // Clear BEFORE patchAttendance so the call uses the server's
+      // signInAt as the authoritative source from this point on.
+      _optimisticSignInAt = null;
       setAttendance(patchAttendance(r));
     } catch (err: any) {
       const raw = typeof err === "string" ? err : err?.message || "";
