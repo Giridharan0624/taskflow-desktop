@@ -12,6 +12,9 @@ import { TaskSelector } from "./TaskSelector";
 import { TaskFlowLogo } from "./Logo";
 import { useTheme } from "../lib/useTheme";
 import { friendlyError } from "../lib/errors";
+import { Button } from "./ui/Button";
+import { Card } from "./ui/Card";
+import { cn } from "../lib/cn";
 
 interface TimerViewProps {
   user: User;
@@ -170,10 +173,6 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
     [sessions, isActive ? tickCount : 0]
   );
 
-  // groupedTasks doesn't actually depend on totalHours — it was just
-  // pulled in so the grouped task display would re-render on each tick.
-  // Swap to tickCount directly so both useMemos share the same
-  // invalidation signal without a cascading dep chain.
   const groupedTasks = useMemo(
     () => groupSessionsByTask(sessions),
     [sessions, isActive ? tickCount : 0]
@@ -238,13 +237,16 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
     const cur = attendance.currentTask;
     const curSess = sessions.find((s) => !s.signOutAt);
     return (
-      <Shell user={user} onLogout={onLogout} dashboardURL={dashboardURL}
+      <Shell
+        user={user}
+        onLogout={onLogout}
+        dashboardURL={dashboardURL}
         bottom={
           <>
             <ErrorBar error={error} />
             <SessionBanner message={sessionBanner} onDismiss={dismissSessionBanner} />
-            <div class="px-3 py-2.5" style={{ borderTop: "1px solid var(--color-border)", background: "var(--color-surface)" }}>
-              <p class="text-[10px] font-bold uppercase tracking-widest mb-1.5" style={{ color: "var(--color-text-muted)" }}>
+            <div class="px-3 py-2.5 border-t border-border bg-card">
+              <p class="text-[10px] font-bold uppercase tracking-widest mb-1.5 text-muted-foreground">
                 Switch Task
               </p>
               <TaskSelector onStart={handleStart} loading={loading} />
@@ -253,51 +255,54 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
         }
       >
         {/* Live timer card */}
-        <div class="mx-3 mt-3 card overflow-hidden" style={{ borderColor: "var(--color-live-border)", background: "var(--color-live-bg)" }}>
+        <Card class="mx-3 mt-3 overflow-hidden border-emerald-500/30 bg-emerald-500/5 dark:bg-emerald-500/10">
           <div class="px-4 pt-3 pb-2.5 text-center">
-            {/* Status */}
             <div class="flex items-center justify-center gap-2 mb-1.5">
               <span class="relative flex h-2 w-2">
-                <span class="animate-ping absolute h-full w-full rounded-full opacity-60" style={{ background: "var(--color-live)" }} />
-                <span class="relative rounded-full h-2 w-2" style={{ background: "var(--color-live)" }} />
+                <span class="animate-ping absolute h-full w-full rounded-full bg-emerald-500 opacity-60" />
+                <span class="relative rounded-full h-2 w-2 bg-emerald-500" />
               </span>
-              <span class="text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--color-live-text)" }}>
+              <span class="text-[10px] font-semibold uppercase tracking-widest text-emerald-700 dark:text-emerald-300">
                 Recording
               </span>
             </div>
 
-            {/* Timer */}
             {attendance.currentSignInAt && (
-              <Timer startTime={attendance.currentSignInAt} class="timer-display text-[34px]" />
+              <Timer
+                startTime={attendance.currentSignInAt}
+                class="font-mono font-bold tracking-tight text-[34px] text-emerald-700 dark:text-emerald-300"
+              />
             )}
 
-            {/* Task info */}
-            <p class="text-[12px] font-semibold mt-1.5 truncate" style={{ color: "var(--color-text)" }}>
+            <p class="text-xs font-semibold mt-1.5 truncate text-foreground">
               {cur?.taskTitle || "Working"}
             </p>
-            <p class="text-[10px] truncate" style={{ color: "var(--color-text-muted)" }}>
+            <p class="text-[10px] truncate text-muted-foreground">
               {cur?.projectName}
               {curSess?.description && <span class="italic"> — {curSess.description}</span>}
             </p>
 
-            {/* Stop */}
-            <button class="btn-stop mt-2.5 w-full" onClick={handleStop} disabled={loading}>
-              {loading ? "Stopping..." : "Stop Timer"}
-            </button>
+            <Button
+              variant="destructive"
+              size="sm"
+              class="mt-2.5 w-full"
+              onClick={handleStop}
+              disabled={loading}
+            >
+              {loading ? "Stopping…" : "Stop Timer"}
+            </Button>
           </div>
 
-          {/* Stats bar */}
-          <div class="flex items-center justify-between px-4 py-1.5" style={{ borderTop: "1px solid var(--color-live-border)" }}>
-            <span class="text-[10px]" style={{ color: "var(--color-text-muted)" }}>
+          <div class="flex items-center justify-between px-4 py-1.5 border-t border-emerald-500/20">
+            <span class="text-[10px] text-muted-foreground">
               {sessions.length} session{sessions.length !== 1 && "s"}
             </span>
-            <span class="text-[11px] font-bold font-mono tabular-nums" style={{ color: "var(--color-text-secondary)" }}>
+            <span class="text-[11px] font-bold font-mono tabular-nums text-foreground/75">
               {formatDuration(totalHours)} today
             </span>
           </div>
-        </div>
+        </Card>
 
-        {/* Sessions */}
         <SessionBlock tasks={groupedTasks} onResume={handleResume} loading={loading} />
       </Shell>
     );
@@ -305,33 +310,34 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
 
   /* ═══ STOPPED ═══ */
   return (
-    <Shell user={user} onLogout={onLogout} dashboardURL={dashboardURL}
+    <Shell
+      user={user}
+      onLogout={onLogout}
+      dashboardURL={dashboardURL}
       bottom={
         <>
           <ErrorBar error={error} />
           <SessionBanner message={sessionBanner} onDismiss={dismissSessionBanner} />
-          <div class="px-3 py-2.5" style={{ borderTop: "1px solid var(--color-border)", background: "var(--color-surface)" }}>
+          <div class="px-3 py-2.5 border-t border-border bg-card">
             <TaskSelector onStart={handleStart} loading={loading} />
           </div>
         </>
       }
     >
-      {/* Header bar */}
-      <div class="flex items-center justify-between px-4 py-3" style={{ borderBottom: "1px solid var(--color-border)" }}>
+      <div class="flex items-center justify-between px-4 py-3 border-b border-border">
         <div>
-          <p class="text-[14px] font-bold" style={{ color: "var(--color-text)" }}>Time Tracker</p>
+          <p class="text-sm font-bold text-foreground">Time Tracker</p>
           {sessions.length > 0 && (
-            <p class="text-[11px]" style={{ color: "var(--color-text-muted)" }}>
+            <p class="text-[11px] text-muted-foreground">
               {sessions.length} session{sessions.length !== 1 && "s"} today
             </p>
           )}
         </div>
-        <span class="text-[20px] font-bold font-mono tabular-nums" style={{ color: "var(--color-text-secondary)" }}>
+        <span class="text-xl font-bold font-mono tabular-nums text-foreground/80">
           {sessions.length > 0 ? formatDuration(totalHours) : "00:00:00"}
         </span>
       </div>
 
-      {/* Sessions */}
       <SessionBlock tasks={groupedTasks} onResume={handleResume} loading={loading} />
     </Shell>
   );
@@ -339,7 +345,19 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
 
 /* ════════════════ Shell ════════════════ */
 
-function Shell({ user, onLogout, children, bottom, dashboardURL }: { user: User; onLogout: () => void; children: any; bottom?: any; dashboardURL?: string }) {
+function Shell({
+  user,
+  onLogout,
+  children,
+  bottom,
+  dashboardURL,
+}: {
+  user: User;
+  onLogout: () => void;
+  children: any;
+  bottom?: any;
+  dashboardURL?: string;
+}) {
   const { isDark, toggle } = useTheme();
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [updating, setUpdating] = useState(false);
@@ -368,53 +386,55 @@ function Shell({ user, onLogout, children, bottom, dashboardURL }: { user: User;
   }
 
   return (
-    <div class="flex flex-col h-screen" style={{ background: "var(--color-bg)" }}>
-      {/* Header */}
-      <header class="flex items-center justify-between px-3 py-2.5" style={{ background: "var(--color-surface)", borderBottom: "1px solid var(--color-border)" }}>
+    <div class="flex flex-col h-screen bg-background">
+      <header class="flex items-center justify-between px-3 py-2.5 bg-card border-b border-border">
         <div class="flex items-center gap-2.5">
           {user.avatarUrl ? (
-            <img src={user.avatarUrl} alt={user.name} class="w-7 h-7 rounded-xl object-cover" />
+            <img src={user.avatarUrl} alt={user.name} class="w-7 h-7 rounded-md object-cover" />
           ) : (
-            <div class="w-7 h-7 rounded-xl flex items-center justify-center" style={{ background: "var(--color-primary-light)" }}>
-              <span class="text-[11px] font-bold" style={{ color: "var(--color-primary)" }}>{user.name?.charAt(0) || "?"}</span>
+            <div class="w-7 h-7 rounded-md bg-primary/10 flex items-center justify-center">
+              <span class="text-[11px] font-bold text-primary">{user.name?.charAt(0) || "?"}</span>
             </div>
           )}
-          <div>
-            <p class="text-[13px] font-semibold leading-tight" style={{ color: "var(--color-text)" }}>{user.name}</p>
-            <p class="text-[10px]" style={{ color: "var(--color-text-muted)" }}>
-              {user.employeeId && <span class="font-medium" style={{ color: "var(--color-primary)" }}>{user.employeeId}</span>}
+          <div class="min-w-0">
+            <p class="text-[13px] font-semibold leading-tight text-foreground truncate">{user.name}</p>
+            <p class="text-[10px] text-muted-foreground truncate">
+              {user.employeeId && (
+                <span class="font-medium text-primary">{user.employeeId}</span>
+              )}
               {user.employeeId && " · "}
               {user.email}
             </p>
           </div>
         </div>
-        <div class="flex items-center gap-1.5">
-          <button
+        <div class="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            class="h-7 w-7 text-muted-foreground"
             onClick={toggle}
-            class="w-7 h-7 rounded-lg flex items-center justify-center transition-colors"
-            style={{ background: "var(--color-surface-hover)", color: "var(--color-text-muted)" }}
+            aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
             title={isDark ? "Light mode" : "Dark mode"}
           >
             {isDark ? <SunIcon /> : <MoonIcon />}
-          </button>
-          <button class="btn-ghost px-2 py-1" onClick={onLogout}>Sign Out</button>
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            class="h-7 px-2 text-xs text-muted-foreground"
+            onClick={onLogout}
+          >
+            Sign Out
+          </Button>
         </div>
       </header>
 
-      {/* Update banner */}
       {updateInfo && (
-        <div class="flex items-center justify-between px-3 py-2" style={{ background: "var(--color-primary-light)", borderBottom: "1px solid var(--color-border)" }}>
-          <p class="text-[11px] font-medium" style={{ color: "var(--color-primary)" }}>
-            v{updateInfo.version} available
-          </p>
-          <button
-            onClick={handleUpdate}
-            disabled={updating}
-            class="text-[10px] font-bold px-2.5 py-1 rounded-lg text-white transition-all disabled:opacity-50"
-            style={{ background: "var(--color-primary)" }}
-          >
-            {updating ? "Updating..." : "Update Now"}
-          </button>
+        <div class="flex items-center justify-between px-3 py-2 bg-primary/10 border-b border-border">
+          <p class="text-xs font-medium text-primary">v{updateInfo.version} available</p>
+          <Button size="sm" class="h-7 px-3 text-xs" onClick={handleUpdate} disabled={updating}>
+            {updating ? "Updating…" : "Update Now"}
+          </Button>
         </div>
       )}
 
@@ -422,16 +442,19 @@ function Shell({ user, onLogout, children, bottom, dashboardURL }: { user: User;
 
       {bottom}
 
-      <footer class="px-3 py-1.5 flex items-center justify-between" style={{ background: "var(--color-surface)", borderTop: "1px solid var(--color-border)" }}>
+      <footer class="px-3 py-1.5 flex items-center justify-between bg-card border-t border-border">
         <div class="flex items-center gap-1.5">
           <TaskFlowLogo size={16} />
-          <span class="text-[10px] font-extrabold tracking-tight" style={{ color: "var(--color-text-muted)" }}>
-            Task<span style={{ color: "var(--color-primary)" }}>Flow</span>
+          <span class="text-[10px] font-extrabold tracking-tight text-muted-foreground">
+            Task<span class="text-primary">Flow</span>
           </span>
         </div>
         {dashboardURL && (
-          <a href={dashboardURL} target="_blank"
-            class="text-[10px] font-medium transition-colors" style={{ color: "var(--color-text-muted)" }}>
+          <a
+            href={dashboardURL}
+            target="_blank"
+            class="text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors"
+          >
             Dashboard ↗
           </a>
         )}
@@ -446,9 +469,9 @@ function SessionBlock({ tasks, onResume, loading }: { tasks: GroupedTask[]; onRe
   if (tasks.length === 0) return null;
   const total = tasks.reduce((s, t) => s + t.totalHours, 0);
   return (
-    <div class="mx-3 mt-3 card overflow-hidden">
-      <div class="px-3 py-2" style={{ background: "var(--color-surface-hover)", borderBottom: "1px solid var(--color-border-light)" }}>
-        <span class="text-[10px] font-bold uppercase tracking-[0.1em]" style={{ color: "var(--color-text-muted)" }}>
+    <Card class="mx-3 mt-3 overflow-hidden">
+      <div class="px-3 py-2 bg-muted/50 border-b border-border">
+        <span class="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">
           Today's Sessions
         </span>
       </div>
@@ -457,11 +480,11 @@ function SessionBlock({ tasks, onResume, loading }: { tasks: GroupedTask[]; onRe
           <TaskRow key={i} task={t} onResume={() => onResume(t)} loading={loading} />
         ))}
       </div>
-      <div class="flex items-center justify-between px-3 py-2" style={{ background: "var(--color-surface-hover)", borderTop: "1px solid var(--color-border-light)" }}>
-        <span class="text-[10px] font-bold uppercase tracking-[0.1em]" style={{ color: "var(--color-text-muted)" }}>Total</span>
-        <span class="text-[13px] font-bold font-mono tabular-nums" style={{ color: "var(--color-text)" }}>{formatDuration(total)}</span>
+      <div class="flex items-center justify-between px-3 py-2 bg-muted/50 border-t border-border">
+        <span class="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Total</span>
+        <span class="text-[13px] font-bold font-mono tabular-nums text-foreground">{formatDuration(total)}</span>
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -480,26 +503,36 @@ interface GroupedTask {
 
 function TaskRow({ task, onResume, loading }: { task: GroupedTask; onResume: () => void; loading: boolean }) {
   return (
-    <div class="flex items-center gap-2.5 px-3 py-2.5 transition-colors" style={{ borderBottom: "1px solid var(--color-border-light)" }}>
-      <button
+    <div class="flex items-center gap-2.5 px-3 py-2.5 border-b border-border last:border-0">
+      <Button
+        variant="ghost"
+        size="icon"
+        class="h-7 w-7 flex-shrink-0 bg-primary/10 text-primary hover:bg-primary/20 hover:scale-105 active:scale-95"
         onClick={onResume}
         disabled={loading}
-        class="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center transition-all disabled:opacity-20 hover:scale-105 active:scale-95"
-        style={{ background: "var(--color-primary-light)", color: "var(--color-primary)" }}
         title="Resume"
+        aria-label={`Resume ${task.taskTitle}`}
       >
-        <svg class="w-3 h-3 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
-      </button>
+        <svg class="w-3 h-3 ml-0.5" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M8 5v14l11-7z" />
+        </svg>
+      </Button>
       <div class="min-w-0 flex-1">
-        <p class="text-[12px] font-medium truncate leading-tight" style={{ color: "var(--color-text)" }}>{task.taskTitle}</p>
-        <p class="text-[10px] truncate leading-tight" style={{ color: "var(--color-text-muted)" }}>
+        <p class="text-xs font-medium truncate leading-tight text-foreground">{task.taskTitle}</p>
+        <p class="text-[10px] truncate leading-tight text-muted-foreground">
           {task.projectName}
-          {task.description && task.description !== task.taskTitle && <span class="italic"> — {task.description}</span>}
+          {task.description && task.description !== task.taskTitle && (
+            <span class="italic"> — {task.description}</span>
+          )}
           <span class="opacity-60"> · {task.sessionCount}x</span>
         </p>
       </div>
-      <span class={`text-[13px] font-bold font-mono tabular-nums flex-shrink-0`}
-        style={{ color: task.isRunning ? "var(--color-live-text)" : "var(--color-primary)" }}>
+      <span
+        class={cn(
+          "text-[13px] font-bold font-mono tabular-nums flex-shrink-0",
+          task.isRunning ? "text-emerald-600 dark:text-emerald-400" : "text-primary",
+        )}
+      >
         {formatDuration(task.totalHours)}
       </span>
     </div>
@@ -509,7 +542,10 @@ function TaskRow({ task, onResume, loading }: { task: GroupedTask; onResume: () 
 function ErrorBar({ error }: { error: string }) {
   if (!error) return null;
   return (
-    <div class="mx-3 mb-2 text-[11px] p-2 rounded-xl" style={{ background: "var(--color-danger-bg)", border: "1px solid var(--color-danger-border)", color: "var(--color-danger)" }}>
+    <div
+      role="alert"
+      class="mx-3 mb-2 text-xs p-2 rounded-md bg-destructive/10 border border-destructive/30 text-destructive"
+    >
       {error}
     </div>
   );
@@ -523,10 +559,18 @@ function ErrorBar({ error }: { error: string }) {
 function SessionBanner({ message, onDismiss }: { message: string; onDismiss: () => void }) {
   if (!message) return null;
   return (
-    <div class="mx-3 mb-2 text-[11px] p-2 rounded-xl flex items-start gap-2"
-      style={{ background: "var(--color-warning-bg, rgba(234, 179, 8, 0.1))", border: "1px solid var(--color-warning-border, rgba(234, 179, 8, 0.3))", color: "var(--color-warning, rgb(161, 98, 7))" }}>
+    <div
+      role="status"
+      class="mx-3 mb-2 text-xs p-2 rounded-md flex items-start gap-2 bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300"
+    >
       <span class="flex-1">{message}</span>
-      <button onClick={onDismiss} class="opacity-60 hover:opacity-100" aria-label="Dismiss">×</button>
+      <button
+        onClick={onDismiss}
+        class="opacity-60 hover:opacity-100 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+        aria-label="Dismiss"
+      >
+        ×
+      </button>
     </div>
   );
 }
@@ -536,7 +580,8 @@ function SessionBanner({ message, onDismiss }: { message: string; onDismiss: () 
 function SunIcon() {
   return (
     <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-      <circle cx="12" cy="12" r="5" /><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+      <circle cx="12" cy="12" r="5" />
+      <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
     </svg>
   );
 }
