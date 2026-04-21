@@ -113,24 +113,30 @@ export function TaskSelector({ onStart, loading }: TaskSelectorProps) {
         </p>
       )}
 
-      <div class="flex gap-1.5">
+      <div class="flex gap-2">
         <Button
           type="button"
-          size="sm"
-          class="flex-1 h-8"
+          class="flex-1 h-9 font-semibold"
           disabled={loading || !canStartTask}
           onClick={handleStartTask}
         >
-          {loading ? "…" : "Start"}
+          {loading ? (
+            <span>…</span>
+          ) : (
+            <>
+              <PlayIcon />
+              Start
+            </>
+          )}
         </Button>
         <Button
           type="button"
           variant="secondary"
-          size="sm"
-          class="flex-1 h-8"
+          class="flex-1 h-9 font-semibold"
           disabled={loading || !description}
           onClick={handleMeeting}
         >
+          <MeetingIcon />
           Meeting
         </Button>
       </div>
@@ -179,11 +185,12 @@ function Dropdown({
       <button
         type="button"
         class={cn(
-          "w-full flex items-center gap-1.5 px-2.5 h-8 rounded-md text-xs text-left",
-          "bg-background border transition-colors",
+          "w-full flex items-center gap-2 px-3 h-9 rounded-md text-xs text-left",
+          "bg-background border shadow-sm transition-all",
+          "hover:border-ring/50",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-          open ? "border-primary ring-2 ring-ring ring-offset-2 ring-offset-background" : "border-input",
-          selected ? "text-foreground" : "text-muted-foreground",
+          open ? "border-primary" : "border-input",
+          selected ? "text-foreground font-medium" : "text-muted-foreground",
         )}
         onClick={() => setOpen(!open)}
         aria-expanded={open}
@@ -280,6 +287,22 @@ function TaskIcon() {
         stroke-linejoin="round"
         d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"
       />
+    </svg>
+  );
+}
+
+function PlayIcon() {
+  return (
+    <svg class="w-3 h-3 fill-current" viewBox="0 0 24 24">
+      <path d="M8 5v14l11-7z" />
+    </svg>
+  );
+}
+
+function MeetingIcon() {
+  return (
+    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
     </svg>
   );
 }

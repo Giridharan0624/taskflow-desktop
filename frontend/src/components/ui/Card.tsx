@@ -1,13 +1,16 @@
 import type { JSX } from "preact"
 import { cn } from "../../lib/cn"
 
-type DivProps = JSX.IntrinsicElements["div"]
+// `class` omitted from the element attrs so it doesn't re-spread
+// through rest. See Button.tsx.
+type DivProps = Omit<JSX.IntrinsicElements["div"], "class"> & { class?: string }
 
-export function Card({ className, children, ...rest }: DivProps) {
+export function Card({ class: cls, className, children, ...rest }: DivProps) {
   return (
     <div
       class={cn(
         "rounded-lg border border-border bg-card text-card-foreground shadow-sm",
+        cls,
         className as string | undefined,
       )}
       {...rest}
@@ -17,51 +20,55 @@ export function Card({ className, children, ...rest }: DivProps) {
   )
 }
 
-export function CardHeader({ className, children, ...rest }: DivProps) {
+export function CardHeader({ class: cls, className, children, ...rest }: DivProps) {
   return (
-    <div class={cn("flex flex-col space-y-1.5 p-4", className as string | undefined)} {...rest}>
+    <div
+      class={cn("flex flex-col space-y-1.5 p-4", cls, className as string | undefined)}
+      {...rest}
+    >
       {children}
     </div>
   )
 }
 
-export function CardTitle({ className, children, ...rest }: DivProps) {
+export function CardTitle({ class: cls, className, children, ...rest }: DivProps) {
   return (
     <h3
       class={cn(
         "text-base font-semibold leading-none tracking-tight",
+        cls,
         className as string | undefined,
       )}
-      {...(rest as JSX.HTMLAttributes<HTMLHeadingElement>)}
+      {...(rest as JSX.IntrinsicElements["h3"])}
     >
       {children}
     </h3>
   )
 }
 
-export function CardDescription({ className, children, ...rest }: DivProps) {
+export function CardDescription({ class: cls, className, children, ...rest }: DivProps) {
   return (
     <p
-      class={cn("text-xs text-muted-foreground", className as string | undefined)}
-      {...(rest as JSX.HTMLAttributes<HTMLParagraphElement>)}
+      class={cn("text-xs text-muted-foreground", cls, className as string | undefined)}
+      {...(rest as JSX.IntrinsicElements["p"])}
     >
       {children}
     </p>
   )
 }
 
-export function CardContent({ className, children, ...rest }: DivProps) {
+export function CardContent({ class: cls, className, children, ...rest }: DivProps) {
   return (
-    <div class={cn("p-4 pt-0", className as string | undefined)} {...rest}>
+    <div class={cn("p-4 pt-0", cls, className as string | undefined)} {...rest}>
       {children}
     </div>
   )
 }
 
-export function CardFooter({ className, children, ...rest }: DivProps) {
+export function CardFooter({ class: cls, className, children, ...rest }: DivProps) {
   return (
     <div
-      class={cn("flex items-center p-4 pt-0", className as string | undefined)}
+      class={cn("flex items-center p-4 pt-0", cls, className as string | undefined)}
       {...rest}
     >
       {children}

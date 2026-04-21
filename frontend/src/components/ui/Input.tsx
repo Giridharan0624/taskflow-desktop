@@ -2,13 +2,15 @@ import type { JSX } from "preact"
 import { forwardRef } from "preact/compat"
 import { cn } from "../../lib/cn"
 
-// JSX.IntrinsicElements['input'] carries element-specific attrs
-// (type, autoComplete, min, max, step, etc.); JSX.HTMLAttributes
-// would drop those.
-type InputProps = JSX.IntrinsicElements["input"]
+// See Button.tsx for the rationale — `class` is omitted from the
+// element attrs so destructuring doesn't leak it back through `...rest`
+// and silently wipe our variant styles.
+type InputProps = Omit<JSX.IntrinsicElements["input"], "class"> & {
+  class?: string
+}
 
 export const Input = forwardRef<HTMLInputElement, InputProps>(
-  ({ className, ...rest }, ref) => {
+  ({ class: cls, className, ...rest }, ref) => {
     // type defaults to "text" in the browser when omitted — no need
     // to pass it explicitly. Pulling it out of rest would trip
     // Preact's narrow HTMLAttributes<HTMLInputElement>['type'] union.
@@ -21,6 +23,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
           "placeholder:text-muted-foreground",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
           "disabled:cursor-not-allowed disabled:opacity-50",
+          cls,
           className as string | undefined,
         )}
         {...rest}

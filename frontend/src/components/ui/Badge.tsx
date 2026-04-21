@@ -3,8 +3,9 @@ import { cn } from "../../lib/cn"
 
 type Variant = "default" | "secondary" | "destructive" | "outline" | "success" | "warning"
 
-type BadgeProps = JSX.IntrinsicElements["div"] & {
+type BadgeProps = Omit<JSX.IntrinsicElements["div"], "class"> & {
   variant?: Variant
+  class?: string
 }
 
 // "success" and "warning" aren't in vanilla shadcn but this app has
@@ -26,13 +27,20 @@ const variants: Record<Variant, string> = {
     "border-transparent bg-amber-500/10 text-amber-700 dark:text-amber-300",
 }
 
-export function Badge({ variant = "default", className, children, ...rest }: BadgeProps) {
+export function Badge({
+  variant = "default",
+  class: cls,
+  className,
+  children,
+  ...rest
+}: BadgeProps) {
   return (
     <div
       class={cn(
         "inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold",
         "transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
         variants[variant],
+        cls,
         className as string | undefined,
       )}
       {...rest}

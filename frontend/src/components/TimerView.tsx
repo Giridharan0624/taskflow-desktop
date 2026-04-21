@@ -245,8 +245,8 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
           <>
             <ErrorBar error={error} />
             <SessionBanner message={sessionBanner} onDismiss={dismissSessionBanner} />
-            <div class="px-3 py-2.5 border-t border-border bg-card">
-              <p class="text-[10px] font-bold uppercase tracking-widest mb-1.5 text-muted-foreground">
+            <div class="px-3 pt-2.5 pb-3 border-t border-border bg-card">
+              <p class="text-[9px] font-bold uppercase tracking-[0.14em] mb-2 text-muted-foreground/80">
                 Switch Task
               </p>
               <TaskSelector onStart={handleStart} loading={loading} />
@@ -255,50 +255,65 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
         }
       >
         {/* Live timer card */}
-        <Card class="mx-3 mt-3 overflow-hidden border-emerald-500/30 bg-emerald-500/5 dark:bg-emerald-500/10">
-          <div class="px-4 pt-3 pb-2.5 text-center">
-            <div class="flex items-center justify-center gap-2 mb-1.5">
-              <span class="relative flex h-2 w-2">
-                <span class="animate-ping absolute h-full w-full rounded-full bg-emerald-500 opacity-60" />
-                <span class="relative rounded-full h-2 w-2 bg-emerald-500" />
+        <Card class="mx-3 mt-3 overflow-hidden border-emerald-500/40 bg-gradient-to-b from-emerald-500/10 to-emerald-500/5 dark:from-emerald-500/15 dark:to-emerald-500/5">
+          <div class="px-4 pt-3.5 pb-3 text-center">
+            {/* Recording badge — pill with pulsing dot */}
+            <div class="inline-flex items-center gap-1.5 px-2.5 py-0.5 mb-2 rounded-full bg-emerald-500/15 dark:bg-emerald-500/20 border border-emerald-500/30">
+              <span class="relative flex h-1.5 w-1.5">
+                <span class="animate-ping absolute h-full w-full rounded-full bg-emerald-500 opacity-75" />
+                <span class="relative rounded-full h-1.5 w-1.5 bg-emerald-500" />
               </span>
-              <span class="text-[10px] font-semibold uppercase tracking-widest text-emerald-700 dark:text-emerald-300">
+              <span class="text-[9px] font-bold uppercase tracking-[0.12em] text-emerald-700 dark:text-emerald-300">
                 Recording
               </span>
             </div>
 
+            {/* Timer */}
             {attendance.currentSignInAt && (
               <Timer
                 startTime={attendance.currentSignInAt}
-                class="font-mono font-bold tracking-tight text-[34px] text-emerald-700 dark:text-emerald-300"
+                class="block font-mono font-bold tracking-tight text-[36px] leading-none text-emerald-700 dark:text-emerald-300"
               />
             )}
 
-            <p class="text-xs font-semibold mt-1.5 truncate text-foreground">
+            {/* Task info */}
+            <p class="text-sm font-semibold mt-2.5 truncate text-foreground px-2">
               {cur?.taskTitle || "Working"}
             </p>
-            <p class="text-[10px] truncate text-muted-foreground">
-              {cur?.projectName}
-              {curSess?.description && <span class="italic"> — {curSess.description}</span>}
-            </p>
+            {(cur?.projectName || curSess?.description) && (
+              <p class="text-[11px] truncate text-muted-foreground mt-0.5 px-2">
+                {cur?.projectName}
+                {curSess?.description && (
+                  <span class="italic"> · {curSess.description}</span>
+                )}
+              </p>
+            )}
 
+            {/* Stop Timer */}
             <Button
               variant="destructive"
-              size="sm"
-              class="mt-2.5 w-full"
+              class="mt-3 w-full h-10 text-sm font-semibold shadow-md"
               onClick={handleStop}
               disabled={loading}
             >
-              {loading ? "Stopping…" : "Stop Timer"}
+              {loading ? (
+                "Stopping…"
+              ) : (
+                <>
+                  <StopIcon />
+                  Stop Timer
+                </>
+              )}
             </Button>
           </div>
 
-          <div class="flex items-center justify-between px-4 py-1.5 border-t border-emerald-500/20">
-            <span class="text-[10px] text-muted-foreground">
-              {sessions.length} session{sessions.length !== 1 && "s"}
+          {/* Stats strip */}
+          <div class="flex items-center justify-between px-4 py-2 border-t border-emerald-500/20 bg-emerald-500/5 dark:bg-emerald-500/10">
+            <span class="text-[10px] font-medium text-muted-foreground">
+              {sessions.length} session{sessions.length !== 1 && "s"} today
             </span>
-            <span class="text-[11px] font-bold font-mono tabular-nums text-foreground/75">
-              {formatDuration(totalHours)} today
+            <span class="text-[11px] font-bold font-mono tabular-nums text-foreground/85">
+              {formatDuration(totalHours)}
             </span>
           </div>
         </Card>
@@ -318,25 +333,39 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
         <>
           <ErrorBar error={error} />
           <SessionBanner message={sessionBanner} onDismiss={dismissSessionBanner} />
-          <div class="px-3 py-2.5 border-t border-border bg-card">
+          <div class="px-3 pt-2.5 pb-3 border-t border-border bg-card">
             <TaskSelector onStart={handleStart} loading={loading} />
           </div>
         </>
       }
     >
-      <div class="flex items-center justify-between px-4 py-3 border-b border-border">
+      <div class="flex items-center justify-between px-4 py-3.5 border-b border-border">
         <div>
-          <p class="text-sm font-bold text-foreground">Time Tracker</p>
-          {sessions.length > 0 && (
-            <p class="text-[11px] text-muted-foreground">
-              {sessions.length} session{sessions.length !== 1 && "s"} today
-            </p>
-          )}
+          <p class="text-sm font-bold text-foreground leading-tight">Time Tracker</p>
+          <p class="text-[11px] text-muted-foreground mt-0.5">
+            {sessions.length > 0
+              ? `${sessions.length} session${sessions.length !== 1 ? "s" : ""} today`
+              : "No sessions yet"}
+          </p>
         </div>
-        <span class="text-xl font-bold font-mono tabular-nums text-foreground/80">
+        <span class={cn(
+          "text-xl font-bold font-mono tabular-nums leading-none",
+          sessions.length > 0 ? "text-foreground" : "text-muted-foreground/40",
+        )}>
           {sessions.length > 0 ? formatDuration(totalHours) : "00:00:00"}
         </span>
       </div>
+
+      {sessions.length === 0 && (
+        <div class="mx-3 mt-3 rounded-lg border border-dashed border-border bg-muted/30 py-8 px-4 text-center">
+          <p class="text-xs font-medium text-muted-foreground">
+            Ready when you are.
+          </p>
+          <p class="text-[10px] text-muted-foreground/70 mt-0.5">
+            Pick a task below to start tracking.
+          </p>
+        </div>
+      )}
 
       <SessionBlock tasks={groupedTasks} onResume={handleResume} loading={loading} />
     </Shell>
@@ -388,30 +417,32 @@ function Shell({
   return (
     <div class="flex flex-col h-screen bg-background">
       <header class="flex items-center justify-between px-3 py-2.5 bg-card border-b border-border">
-        <div class="flex items-center gap-2.5">
+        <div class="flex items-center gap-2.5 min-w-0 flex-1">
           {user.avatarUrl ? (
-            <img src={user.avatarUrl} alt={user.name} class="w-7 h-7 rounded-md object-cover" />
+            <img src={user.avatarUrl} alt={user.name} class="w-8 h-8 rounded-full object-cover flex-shrink-0 ring-2 ring-primary/20" />
           ) : (
-            <div class="w-7 h-7 rounded-md bg-primary/10 flex items-center justify-center">
-              <span class="text-[11px] font-bold text-primary">{user.name?.charAt(0) || "?"}</span>
+            <div class="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center bg-gradient-to-br from-primary to-primary/70 shadow-sm">
+              <span class="text-xs font-bold text-primary-foreground">
+                {user.name?.charAt(0).toUpperCase() || "?"}
+              </span>
             </div>
           )}
-          <div class="min-w-0">
+          <div class="min-w-0 flex-1">
             <p class="text-[13px] font-semibold leading-tight text-foreground truncate">{user.name}</p>
-            <p class="text-[10px] text-muted-foreground truncate">
+            <p class="text-[10px] text-muted-foreground truncate leading-tight mt-0.5">
               {user.employeeId && (
-                <span class="font-medium text-primary">{user.employeeId}</span>
+                <span class="font-semibold text-primary">{user.employeeId}</span>
               )}
               {user.employeeId && " · "}
               {user.email}
             </p>
           </div>
         </div>
-        <div class="flex items-center gap-1">
+        <div class="flex items-center gap-0.5 flex-shrink-0">
           <Button
             variant="ghost"
             size="icon"
-            class="h-7 w-7 text-muted-foreground"
+            class="h-8 w-8 text-muted-foreground hover:text-foreground"
             onClick={toggle}
             aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
             title={isDark ? "Light mode" : "Dark mode"}
@@ -420,10 +451,10 @@ function Shell({
           </Button>
           <Button
             variant="ghost"
-            size="sm"
-            class="h-7 px-2 text-xs text-muted-foreground"
+            class="h-8 px-2.5 text-xs text-muted-foreground hover:text-foreground"
             onClick={onLogout}
           >
+            <SignOutIcon />
             Sign Out
           </Button>
         </div>
@@ -470,9 +501,12 @@ function SessionBlock({ tasks, onResume, loading }: { tasks: GroupedTask[]; onRe
   const total = tasks.reduce((s, t) => s + t.totalHours, 0);
   return (
     <Card class="mx-3 mt-3 overflow-hidden">
-      <div class="px-3 py-2 bg-muted/50 border-b border-border">
-        <span class="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">
+      <div class="flex items-center justify-between px-3 py-2 bg-muted/40 border-b border-border">
+        <span class="text-[9px] font-bold uppercase tracking-[0.14em] text-muted-foreground/80">
           Today's Sessions
+        </span>
+        <span class="text-[10px] font-medium text-muted-foreground">
+          {tasks.length} task{tasks.length !== 1 && "s"}
         </span>
       </div>
       <div>
@@ -480,8 +514,8 @@ function SessionBlock({ tasks, onResume, loading }: { tasks: GroupedTask[]; onRe
           <TaskRow key={i} task={t} onResume={() => onResume(t)} loading={loading} />
         ))}
       </div>
-      <div class="flex items-center justify-between px-3 py-2 bg-muted/50 border-t border-border">
-        <span class="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Total</span>
+      <div class="flex items-center justify-between px-3 py-2 bg-muted/40 border-t border-border">
+        <span class="text-[9px] font-bold uppercase tracking-[0.14em] text-muted-foreground/80">Total</span>
         <span class="text-[13px] font-bold font-mono tabular-nums text-foreground">{formatDuration(total)}</span>
       </div>
     </Card>
@@ -503,39 +537,50 @@ interface GroupedTask {
 
 function TaskRow({ task, onResume, loading }: { task: GroupedTask; onResume: () => void; loading: boolean }) {
   return (
-    <div class="flex items-center gap-2.5 px-3 py-2.5 border-b border-border last:border-0">
-      <Button
-        variant="ghost"
-        size="icon"
-        class="h-7 w-7 flex-shrink-0 bg-primary/10 text-primary hover:bg-primary/20 hover:scale-105 active:scale-95"
-        onClick={onResume}
-        disabled={loading}
-        title="Resume"
-        aria-label={`Resume ${task.taskTitle}`}
+    <button
+      type="button"
+      onClick={onResume}
+      disabled={loading}
+      class={cn(
+        "w-full flex items-center gap-2.5 px-3 py-2.5 border-b border-border last:border-0",
+        "text-left transition-colors hover:bg-muted/40",
+        "focus-visible:outline-none focus-visible:bg-muted/60",
+        "disabled:opacity-50 disabled:cursor-not-allowed",
+      )}
+      title={`Resume ${task.taskTitle}`}
+      aria-label={`Resume ${task.taskTitle}`}
+    >
+      <div
+        class={cn(
+          "flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center",
+          task.isRunning
+            ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+            : "bg-primary/10 text-primary",
+        )}
       >
         <svg class="w-3 h-3 ml-0.5" fill="currentColor" viewBox="0 0 24 24">
           <path d="M8 5v14l11-7z" />
         </svg>
-      </Button>
+      </div>
       <div class="min-w-0 flex-1">
         <p class="text-xs font-medium truncate leading-tight text-foreground">{task.taskTitle}</p>
-        <p class="text-[10px] truncate leading-tight text-muted-foreground">
+        <p class="text-[10px] truncate leading-tight text-muted-foreground mt-0.5">
           {task.projectName}
           {task.description && task.description !== task.taskTitle && (
-            <span class="italic"> — {task.description}</span>
+            <span class="italic"> · {task.description}</span>
           )}
-          <span class="opacity-60"> · {task.sessionCount}x</span>
+          <span class="opacity-70"> · {task.sessionCount}×</span>
         </p>
       </div>
       <span
         class={cn(
-          "text-[13px] font-bold font-mono tabular-nums flex-shrink-0",
-          task.isRunning ? "text-emerald-600 dark:text-emerald-400" : "text-primary",
+          "text-[13px] font-bold font-mono tabular-nums flex-shrink-0 ml-2",
+          task.isRunning ? "text-emerald-600 dark:text-emerald-400" : "text-foreground/75",
         )}
       >
         {formatDuration(task.totalHours)}
       </span>
-    </div>
+    </button>
   );
 }
 
@@ -590,6 +635,22 @@ function MoonIcon() {
   return (
     <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
       <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
+      <rect x="6" y="6" width="12" height="12" rx="1.5" />
+    </svg>
+  );
+}
+
+function SignOutIcon() {
+  return (
+    <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
     </svg>
   );
 }
