@@ -228,12 +228,16 @@ function Dropdown({
                 key={opt.value}
                 role="option"
                 type="button"
+                // Native tooltip so the full name is reachable without
+                // hovering-to-animate and without cluttering the UI
+                // with a permanent second line.
+                title={opt.label}
                 aria-selected={opt.value === value}
                 class={cn(
-                  "w-full text-left px-3 py-1.5 text-xs transition-colors",
+                  "w-full text-left px-3 py-2 text-xs transition-colors",
                   "focus-visible:outline-none focus-visible:bg-accent focus-visible:text-accent-foreground",
                   opt.value === value
-                    ? "bg-primary/10 text-primary"
+                    ? "bg-primary/10 text-primary font-medium"
                     : "text-foreground hover:bg-accent hover:text-accent-foreground",
                 )}
                 onClick={() => {
@@ -241,8 +245,12 @@ function Dropdown({
                   setOpen(false);
                 }}
               >
-                <div class="flex items-center gap-2">
-                  {opt.value === value && (
+                {/* min-w-0 on the flex wrapper — without this the child
+                    span's `truncate` does nothing (flex items default
+                    to min-width:auto = content width, so the text
+                    pushes the menu wider instead of clipping). */}
+                <div class="flex items-center gap-2 min-w-0">
+                  {opt.value === value ? (
                     <svg class="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                       <path
                         fill-rule="evenodd"
@@ -250,8 +258,14 @@ function Dropdown({
                         clip-rule="evenodd"
                       />
                     </svg>
+                  ) : (
+                    // Reserve the same width when unselected so labels
+                    // align vertically across selected + unselected
+                    // rows. Without this the selected row indents and
+                    // the list looks jagged.
+                    <span class="w-3 flex-shrink-0" aria-hidden="true" />
                   )}
-                  <span class="truncate">{opt.label}</span>
+                  <span class="flex-1 truncate">{opt.label}</span>
                 </div>
               </button>
             ))
