@@ -67,6 +67,12 @@ export interface Attendance {
   systemRole: string;
   status: "SIGNED_IN" | "SIGNED_OUT";
   sessionCount: number;
+  /** UTC ISO timestamp captured by the backend when it built this
+   *  response. The frontend feeds it into serverClock so the Timer
+   *  ticks against server time, not the local OS clock — cross-device
+   *  displays agree even when one device's clock is drifted.
+   *  Optional: old backends pre the Phase-6 sync change don't emit it. */
+  serverTime?: string;
 }
 
 export interface AttendanceSession {

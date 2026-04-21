@@ -17,6 +17,13 @@ type Attendance struct {
 	SystemRole     string              `json:"systemRole"`
 	Status         string              `json:"status"` // SIGNED_IN or SIGNED_OUT
 	SessionCount   int                 `json:"sessionCount"`
+	// ServerTime is the backend's UTC ISO timestamp captured when it
+	// built this response. Frontend uses it as a clock reference so
+	// the Timer ticks against server time, not the local OS clock —
+	// cross-device displays agree even when one device's clock has
+	// drifted. Optional (omitempty) so old backends that don't emit
+	// the field don't break deserialisation.
+	ServerTime     string              `json:"serverTime,omitempty"`
 }
 
 // AttendanceSession represents a single work session.

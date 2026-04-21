@@ -15,6 +15,7 @@ import { friendlyError } from "../lib/errors";
 import { Button } from "./ui/Button";
 import { Card } from "./ui/Card";
 import { cn } from "../lib/cn";
+import { recordServerTime, serverNow } from "../lib/serverClock";
 
 interface TimerViewProps {
   user: User;
@@ -67,6 +68,12 @@ export function TimerView({ user, onLogout }: TimerViewProps) {
   // and surface as "timer jumped backwards" after a network:restored
   // event. See C-FE-1.
   function patchAttendance(d: Attendance | null): Attendance | null {
+    if (d?.serverTime) {
+      // Every Attendance that flows through the UI goes through here,
+      // so this is the single call site that keeps serverClock's
+      // offset fresh. Cheap: just a clock sample, no network.
+      recordServerTime(d.serverTime);
+    }
     if (!d) {
       _optimisticSignInAt = null;
       return null;
@@ -707,7 +714,11 @@ function SignOutIcon() {
 /* ════════════════ Utils ════════════════ */
 
 function getSessionHours(session: AttendanceSession): number {
-  if (!session.signOutAt) return (Date.now() - new Date(session.signInAt).getTime()) / 3600000;
+  // Active session: tick against serverNow() (= Date.now() + offset)
+  // so the running total agrees across devices regardless of local
+  // OS clock accuracy. Closed sessions use their stored timestamps,
+  // which are already server-canonical.
+  if (!session.signOutAt) return (serverNow() - new Date(session.signInAt).getTime()) / 3600000;
   if (session.hours && session.hours > 0) return session.hours;
   return (new Date(session.signOutAt).getTime() - new Date(session.signInAt).getTime()) / 3600000;
 }

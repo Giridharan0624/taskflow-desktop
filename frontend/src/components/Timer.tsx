@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "preact/hooks";
+import { serverNow } from "../lib/serverClock";
 
 interface TimerProps {
   startTime: string; // ISO timestamp
@@ -7,7 +8,8 @@ interface TimerProps {
 
 /**
  * LiveTimer — displays elapsed time since startTime, ticking every second.
- * Mirrors the web app's LiveTimer component behavior exactly.
+ * Ticks against serverNow() (= Date.now() + offset) so two devices viewing
+ * the same session agree on elapsed time even when their OS clocks drift.
  */
 export function Timer({ startTime, class: className }: TimerProps) {
   const [elapsed, setElapsed] = useState(0);
@@ -25,8 +27,7 @@ export function Timer({ startTime, class: className }: TimerProps) {
     }
 
     function tick() {
-      const now = Date.now();
-      setElapsed(Math.floor((now - start) / 1000));
+      setElapsed(Math.floor((serverNow() - start) / 1000));
     }
 
     tick(); // Immediate first tick
