@@ -17,7 +17,6 @@ import (
 	"taskflow-desktop/internal/config"
 	"taskflow-desktop/internal/security"
 	"taskflow-desktop/internal/state"
-	"taskflow-desktop/internal/workspace"
 )
 
 // allowedUploadHosts is the host allowlist for presigned S3 upload URLs
@@ -161,22 +160,17 @@ func NewClient(authService *auth.Service, appState *state.AppState) *Client {
 
 // request creates an authenticated request with auto-refreshed JWT.
 //
-// Adds the `x-org-slug` header when a workspace is configured. Backend
-// uses the JWT's `custom:orgId` claim for authorization — the slug header
-// is informational (used for log correlation and the optional WAF
-// rate-limit key in Phase 6) and is silently absent on legacy
-// pre-workspace builds.
+// The backend authorizes on the JWT's `custom:orgId` claim alone —
+// there's no per-request workspace header anymore. Option-B login (email
+// + password on a single hostname) resolves the org from Cognito, not
+// from a client-supplied slug.
 func (c *Client) request() (*resty.Request, error) {
 	token, err := c.authService.GetIDToken()
 	if err != nil {
 		return nil, fmt.Errorf("not authenticated: %w", err)
 	}
 
-	req := c.http.R().SetHeader("Authorization", "Bearer "+token)
-	if slug, err := workspace.Load(); err == nil && slug != "" {
-		req = req.SetHeader("x-org-slug", slug)
-	}
-	return req, nil
+	return c.http.R().SetHeader("Authorization", "Bearer "+token), nil
 }
 
 // GetOrgSettings fetches /orgs/current/settings, refreshes the in-memory

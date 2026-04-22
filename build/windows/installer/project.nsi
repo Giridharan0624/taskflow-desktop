@@ -10,8 +10,8 @@ Unicode true
 !ifndef PRODUCT_VERSION
     !define PRODUCT_VERSION "1.0.0"
 !endif
-!define PRODUCT_PUBLISHER "NEUROSTACK"
-!define PRODUCT_WEB_SITE "https://taskflow.neurostack.in"
+!define PRODUCT_PUBLISHER "TaskFlow"
+!define PRODUCT_WEB_SITE "https://taskflow-ns.vercel.app"
 !define PRODUCT_EXE "taskflow-desktop.exe"
 !define PRODUCT_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
 !define PRODUCT_AUTORUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
