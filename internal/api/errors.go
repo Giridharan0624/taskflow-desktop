@@ -20,6 +20,11 @@ var (
 	ErrNotFound     = errors.New("not found")
 	ErrBadRequest   = errors.New("bad request")
 	ErrServerError  = errors.New("server error")
+	// ErrNotAuthenticated indicates the local auth state is missing
+	// a valid token — typically after Logout. Distinguished from
+	// ErrUnauthorized (which is a 401 from the backend) so goroutines
+	// can stop retrying instead of looping forever. See V3-M5.
+	ErrNotAuthenticated = errors.New("not authenticated")
 )
 
 // jwtLike matches anything that looks like a JWT (three base64url segments

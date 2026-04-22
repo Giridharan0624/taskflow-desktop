@@ -5,6 +5,7 @@ package auth
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 
 	"github.com/zalando/go-keyring"
 )
@@ -63,7 +64,11 @@ func (s *Service) loadTokensFromKeyring() (*Tokens, error) {
 		return nil, fmt.Errorf("keyring get meta: %w", err)
 	}
 	var meta tokenMeta
-	json.Unmarshal([]byte(metaStr), &meta)
+	if err := json.Unmarshal([]byte(metaStr), &meta); err != nil {
+		// Fails-closed: meta.ExpiresAt stays 0, so GetIDToken sees
+		// the token as expired and forces re-auth. See V3-M11.
+		log.Printf("keystore: meta unmarshal failed (%v) — treating stored session as expired", err)
+	}
 
 	return &Tokens{
 		IDToken:      idToken,

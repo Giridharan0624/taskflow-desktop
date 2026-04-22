@@ -5,12 +5,14 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -18,6 +20,30 @@ import (
 
 	"taskflow-desktop/internal/security"
 )
+
+// ErrPackageManaged is returned from DownloadAndInstall on Linux when
+// the running binary was installed via a system package manager
+// (dpkg/rpm/snap). Replacing a dpkg-owned file would either fail
+// with permission denied (our user can't write /usr/bin) or, worse,
+// shadow the package manager's copy on disk so dpkg believes v1.2.3
+// is installed while we're actually running v1.2.4. The caller turns
+// this into a user-visible "run sudo apt upgrade" notification. See
+// V3-Mdeb.
+//
+// Defined here (not in updater_linux.go) so app.go can
+// errors.Is(err, updater.ErrPackageManaged) without per-platform
+// build tags.
+var ErrPackageManaged = errors.New("installed via system package manager — use your package manager to update")
+
+// safeFilename is the allow-list for filenames inside SHA256SUMS. A
+// release workflow that pushed a file named "../evil.exe" or
+// "installer;rm -rf /" would otherwise have its name reach
+// filepath.Base + installer exec. We keep this here at the parse
+// layer as belt-and-suspenders: filepath.Base already neutralizes
+// path traversal, and the caller validates via filepath.Base, but
+// rejecting anything outside [A-Za-z0-9 . _ -] makes the accept-set
+// explicit. See V3-L7.
+var safeFilename = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 const (
 	GitHubRepo = "Giridharan0624/taskflow-desktop"
@@ -116,6 +142,11 @@ func CheckForUpdate() (*UpdateInfo, error) {
 		return &UpdateInfo{Available: false, CurrentVer: "dev"}, nil
 	}
 
+	// Opportunistic cleanup of orphaned download directories from a
+	// previous SIGKILL. Runs once per check (~hourly at most); cost
+	// is a ReadDir on %TEMP%. See V3-M12.
+	cleanupStaleUpdateDirs()
+
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest("GET", CheckURL, nil)
 	if err != nil {
@@ -145,13 +176,18 @@ func CheckForUpdate() (*UpdateInfo, error) {
 	// Clean version tags (remove "v" prefix)
 	latestVer := strings.TrimPrefix(release.TagName, "v")
 
-	// Skip pre-release and build-metadata tags (e.g. "1.6.0-beta", "1.6.0+rc1").
-	// parseVersion strips these suffixes when comparing, so without this
-	// guard beta tags would be silently treated as equal to the stable
-	// release and auto-delivered to stable users. See M-UPD-1.
+	// Skip pre-release and build-metadata tags UNLESS the running
+	// build carries the same channel suffix. Stable clients never
+	// install pre-release tags; staging/rc/beta clients only pick up
+	// their own channel's tags — isNewer enforces the matching-
+	// suffix rule from the other direction. See M-UPD-1, V3-L11.
 	if strings.ContainsAny(latestVer, "-+") {
-		log.Printf("updater: skipping pre-release tag %q", release.TagName)
-		return &UpdateInfo{Available: false, CurrentVer: CurrentVersion, Version: latestVer}, nil
+		ourSuffix := versionSuffix(CurrentVersion)
+		theirSuffix := versionSuffix(latestVer)
+		if ourSuffix == "" || ourSuffix != theirSuffix {
+			log.Printf("updater: skipping pre-release tag %q (channel mismatch with build %q)", release.TagName, CurrentVersion)
+			return &UpdateInfo{Available: false, CurrentVer: CurrentVersion, Version: latestVer}, nil
+		}
 	}
 
 	if !isNewer(latestVer, CurrentVersion) {
@@ -292,8 +328,19 @@ func DownloadAndInstall(info *UpdateInfo) error {
 			return fmt.Errorf("signature verification failed: %w", err)
 		}
 		log.Printf("SHA256SUMS signature verified against release public key")
+	} else if os.Getenv("TASKFLOW_ALLOW_UNSIGNED_UPDATE") == "1" {
+		log.Printf("WARNING: installing UNSIGNED update because TASKFLOW_ALLOW_UNSIGNED_UPDATE=1 — bootstrap/dev path only")
 	} else {
-		log.Printf("WARNING: release signature verification disabled (release.pub is empty) — set up signing per docs to close V2-H1")
+		// Fail-closed: without an embedded release public key we have
+		// no way to distinguish a legitimate SHA256SUMS from a
+		// SHA256SUMS that an attacker replaced on the release CDN.
+		// The old path logged a warning and proceeded; that is the
+		// V3-C1 hole. Frontends receiving this error should surface
+		// "update available — please install manually from the
+		// release page" rather than pretending the update just
+		// failed.
+		return fmt.Errorf("refusing to install unsigned release: this build has no embedded release public key " +
+			"(set TASKFLOW_ALLOW_UNSIGNED_UPDATE=1 to override for bootstrap/dev only)")
 	}
 
 	expectedHash, err := parseSHA256SUMS(string(csBody), safeName)
@@ -320,6 +367,12 @@ func DownloadAndInstall(info *UpdateInfo) error {
 
 // downloadToFile GETs url with a strict redirect policy (https + allowlisted
 // host only) and streams the body into destPath.
+//
+// destPath is opened with O_CREATE|O_EXCL|O_WRONLY so that a pre-
+// existing file or symlink at that path causes an immediate failure
+// rather than silently being followed — the MkdirTemp-joined path was
+// in principle predictable by another process running as the same
+// user, and O_EXCL closes the symlink-race window. See V3-H5.
 func downloadToFile(rawURL, destPath string) error {
 	client := &http.Client{
 		Timeout: 5 * time.Minute,
@@ -349,7 +402,11 @@ func downloadToFile(rawURL, destPath string) error {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	file, err := os.Create(destPath)
+	// O_EXCL: refuse to open an existing file / symlink target.
+	// 0600: owner-only read/write — attackers in the same user's
+	//       scope still can't read the file in flight, and other
+	//       users can't read it at all.
+	file, err := os.OpenFile(destPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
@@ -361,6 +418,38 @@ func downloadToFile(rawURL, destPath string) error {
 		return fmt.Errorf("write: %w", err)
 	}
 	return nil
+}
+
+// cleanupStaleUpdateDirs removes taskflow-update-* directories older
+// than 24 h from the system temp directory. Called at startup to
+// reclaim space from aborted downloads (SIGKILL, crash, power loss
+// mid-update). Best-effort: any error is logged but never fails
+// startup. See V3-M12.
+func cleanupStaleUpdateDirs() {
+	tempRoot := os.TempDir()
+	entries, err := os.ReadDir(tempRoot)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-24 * time.Hour)
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "taskflow-update-") {
+			continue
+		}
+		fullPath := filepath.Join(tempRoot, e.Name())
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(cutoff) {
+			continue
+		}
+		if rmErr := os.RemoveAll(fullPath); rmErr != nil {
+			log.Printf("updater: failed to remove stale %s: %v", fullPath, rmErr)
+		} else {
+			log.Printf("updater: reclaimed stale update dir %s", fullPath)
+		}
+	}
 }
 
 // fetchChecksumBody downloads a SHA256SUMS file and returns its raw
@@ -469,7 +558,15 @@ func parseSHA256SUMS(body, fileName string) (string, error) {
 		// silently block every user's update with a cryptic "no
 		// checksum entry" error. See V2-H3.
 		name := strings.TrimPrefix(fields[len(fields)-1], "*")
-		if strings.EqualFold(filepath.Base(name), fileName) {
+		base := filepath.Base(name)
+		// Belt-and-suspenders: reject filename shapes that might
+		// slip through filepath.Base on some platforms (e.g. NUL,
+		// semicolons). See V3-L7.
+		if !safeFilename.MatchString(base) {
+			log.Printf("updater: rejecting SHA256SUMS entry with unsafe filename %q", base)
+			continue
+		}
+		if strings.EqualFold(base, fileName) {
 			if len(hash) != 64 {
 				return "", fmt.Errorf("malformed hash for %q: length %d", fileName, len(hash))
 			}
@@ -502,7 +599,22 @@ func verifyChecksum(filePath, expectedHex string) error {
 // isNewer reports whether version a is strictly newer than b.
 // Components are compared numerically so "1.10.0" > "1.9.0" — a lexicographic
 // compare would get that wrong because "10" < "9" as strings.
+//
+// Staging guard (V3-L11): if THIS build is a staging/channel build
+// (CurrentVersion contains "-staging" / "-dev" / "-rc"), we compare
+// against the stripped base version AND also require that the
+// release tag has the same suffix. Otherwise a staging client
+// running 1.0.0-staging sees production tag 1.0.0 and auto-updates
+// itself into a production build — which silently moves the user to
+// the prod backend and is a known foot-gun.
 func isNewer(a, b string) bool {
+	// If "b" (this running build) carries a channel suffix, only
+	// upgrade to a tag with the SAME suffix. Otherwise the updater
+	// never crosses channels.
+	bSuffix := versionSuffix(b)
+	if bSuffix != "" && versionSuffix(a) != bSuffix {
+		return false
+	}
 	aParts := parseVersion(a)
 	bParts := parseVersion(b)
 	for i := 0; i < len(aParts) || i < len(bParts); i++ {
@@ -518,6 +630,16 @@ func isNewer(a, b string) bool {
 		}
 	}
 	return false
+}
+
+// versionSuffix returns the first pre-release suffix it finds in v,
+// e.g. "-staging" for "1.0.0-staging" or "" for "1.0.0". Used as the
+// cross-channel update gate. See V3-L11.
+func versionSuffix(v string) string {
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		return v[i:]
+	}
+	return ""
 }
 
 // parseVersion splits "1.2.3" into [1, 2, 3]. Pre-release suffixes like

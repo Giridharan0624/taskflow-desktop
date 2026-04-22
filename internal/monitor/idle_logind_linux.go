@@ -128,6 +128,17 @@ func logindIdleSeconds() (int, bool) {
 		invalidateLogindSession()
 		return 0, false
 	}
+
+	// Refresh the retry timestamp on every successful answer. Without
+	// this, after a logind restart the cooldown-gated retry path
+	// (getLogindSession) would keep returning nil for up to 60 s
+	// because logindLastTryAt is frozen from initial success. The
+	// keyboard idle heuristic then reads 0 idle → counts every tick
+	// as an active keystroke, inflating the keyboard counter for the
+	// duration of the outage. See V3-H9.
+	logindMu.Lock()
+	logindLastTryAt = time.Now()
+	logindMu.Unlock()
 	idle, ok := hint.Value().(bool)
 	if !ok {
 		return 0, false

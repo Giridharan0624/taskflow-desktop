@@ -68,10 +68,18 @@ func (t *InputTracker) Reset() {
 }
 
 // GetCounts returns current keyboard and mouse event totals.
+//
+// CGEventSource counters are monotonic under normal conditions, but
+// they *can* reset back to 0 across a screen-lock/unlock boundary on
+// some macOS versions (observed on 10.12 era) and, theoretically,
+// wrap at 2^64. When `now < last` we treat it as a counter reset and
+// re-seed the baseline instead of subtracting (which would wrap to
+// ~4 billion and be truncated by the activity.go <1000 spike cap,
+// dropping the entire bucket). See V3-M2.
 func (t *InputTracker) GetCounts() (keyboard uint32, mouse uint32) {
 	// Keyboard delta
 	kbNow := uint64(C.getKeyboardCount())
-	if kbNow > t.lastKbCount {
+	if kbNow >= t.lastKbCount {
 		t.keyboardTotal.Add(uint32(kbNow - t.lastKbCount))
 	}
 	t.lastKbCount = kbNow
@@ -80,10 +88,10 @@ func (t *InputTracker) GetCounts() (keyboard uint32, mouse uint32) {
 	moveNow := uint64(C.getMouseMoveCount())
 	clickNow := uint64(C.getMouseClickCount())
 	mouseDelta := uint32(0)
-	if moveNow > t.lastMoveCount {
+	if moveNow >= t.lastMoveCount {
 		mouseDelta += uint32(moveNow - t.lastMoveCount)
 	}
-	if clickNow > t.lastClickCount {
+	if clickNow >= t.lastClickCount {
 		mouseDelta += uint32(clickNow - t.lastClickCount)
 	}
 	if mouseDelta > 0 {

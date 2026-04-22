@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -86,6 +87,13 @@ type OrgSettings struct {
 }
 
 // Client handles all API communication with the backend.
+//
+// IMPORTANT: Treat c.http and c.uploads as immutable after NewClient.
+// Do NOT call SetHeader / SetBody / SetAuthToken etc. on the client
+// itself — those mutations are not synchronised and would cross
+// between concurrent callers' requests (token of caller A could land
+// on caller B's request). Always use c.http.R() which returns a fresh
+// *resty.Request that is request-local. See V3-M10.
 type Client struct {
 	http        *resty.Client
 	// uploads is a separate resty.Client with a longer timeout for
@@ -139,7 +147,23 @@ func NewClient(authService *auth.Service, appState *state.AppState) *Client {
 		CheckRedirect: checkRedirect,
 	}).
 		SetBaseURL(cfg.APIURL).
-		SetHeader("Content-Type", "application/json")
+		SetHeader("Content-Type", "application/json").
+		// Retry on transient network errors (Wi-Fi drop, DNS blip).
+		// One extra attempt with a 2-second backoff turns a 5-second
+		// outage from "lost heartbeat" into "delayed heartbeat". We
+		// don't retry on 4xx/5xx because those can be non-idempotent
+		// (a heartbeat already applied on the server, for instance)
+		// — only transport-level failures get a retry. See V3-M4.
+		SetRetryCount(1).
+		SetRetryWaitTime(2 * time.Second).
+		SetRetryMaxWaitTime(5 * time.Second).
+		AddRetryCondition(func(r *resty.Response, err error) bool {
+			// Retry only on transport-level failures (err != nil
+			// and no HTTP response). Any HTTP status code, even
+			// 5xx, means the request was delivered and may have
+			// been processed.
+			return err != nil && r == nil
+		})
 
 	// Uploads get 3 minutes. A multi-MB screenshot over a hotel-WiFi
 	// uplink can easily take >30s; without a separate budget we
@@ -167,7 +191,11 @@ func NewClient(authService *auth.Service, appState *state.AppState) *Client {
 func (c *Client) request() (*resty.Request, error) {
 	token, err := c.authService.GetIDToken()
 	if err != nil {
-		return nil, fmt.Errorf("not authenticated: %w", err)
+		// Wrap with the sentinel so callers can errors.Is() and
+		// distinguish "local auth state is gone" from "backend said
+		// 401". The heartbeat goroutine uses this to stop the retry
+		// loop after logout. See V3-M5.
+		return nil, fmt.Errorf("%w: %v", ErrNotAuthenticated, err)
 	}
 
 	return c.http.R().SetHeader("Authorization", "Bearer "+token), nil
@@ -457,7 +485,28 @@ func (c *Client) SendActivityHeartbeat(data map[string]interface{}) error {
 //     allowedUploadHosts before PUTting JPEG bytes to it, so a
 //     compromised backend cannot redirect a frame of the user's screen
 //     to an attacker host. See C-API-1.
+//
+// Retry behavior: if the S3 PUT returns 403 (most commonly because the
+// presigned URL expired between fetch and upload on a slow uplink), we
+// request a fresh presign and try the PUT once more. Idempotent — the
+// key is derived from filename, so a retry overwrites rather than
+// duplicating. See V3-H7.
 func (c *Client) UploadScreenshot(jpegData []byte, filename string) (string, error) {
+	cdnURL, err := c.uploadScreenshotOnce(jpegData, filename)
+	if err == nil {
+		return cdnURL, nil
+	}
+	// Only retry on the expired-presign signature — everything else is
+	// either a real failure (network, auth) or a bug.
+	if !isPresignExpired(err) {
+		return "", err
+	}
+	log.Printf("screenshot upload: presign appears expired (%v) — requesting fresh URL and retrying once", err)
+	return c.uploadScreenshotOnce(jpegData, filename)
+}
+
+// uploadScreenshotOnce performs one presign + PUT cycle.
+func (c *Client) uploadScreenshotOnce(jpegData []byte, filename string) (string, error) {
 	// Step 1: Get presigned URL
 	req, err := c.request()
 	if err != nil {
@@ -512,6 +561,16 @@ func (c *Client) UploadScreenshot(jpegData []byte, filename string) (string, err
 	}
 
 	return presignResp.FileURL, nil
+}
+
+// isPresignExpired returns true for errors that look like an expired
+// presigned URL (S3 returns 403 "Request has expired" or similar).
+// Used to decide whether UploadScreenshot's single retry path applies.
+func isPresignExpired(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "S3 upload failed 403")
 }
 
 // snakeToCamel converts a backend response body's snake_case JSON keys

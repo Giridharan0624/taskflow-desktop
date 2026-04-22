@@ -13,6 +13,7 @@ require (
 	github.com/kbinani/screenshot v0.0.0-20250624051815-089614a94018
 	github.com/wailsapp/wails/v2 v2.12.0
 	github.com/zalando/go-keyring v0.2.5
+	golang.org/x/sync v0.11.0
 	golang.org/x/sys v0.30.0
 )
 

@@ -428,8 +428,20 @@ func (m *Manager) handleShowBalloon() {
 		m.nid.SzInfo[i] = 0
 	}
 
-	copy(m.nid.SzInfoTitle[:], utf16(bal.title))
-	copy(m.nid.SzInfo[:], utf16(bal.message))
+	// Windows caps title at 63 chars + null; message at 255 + null.
+	// copy() silently truncates; log once so operators spot the
+	// truncation during integration instead of debugging "why is my
+	// long error message cut off?" See V3-M7.
+	titleUTF16 := utf16(bal.title)
+	msgUTF16 := utf16(bal.message)
+	if len(titleUTF16) > len(m.nid.SzInfoTitle) {
+		log.Printf("ShowBalloon: title truncated from %d to %d utf16 units", len(titleUTF16), len(m.nid.SzInfoTitle))
+	}
+	if len(msgUTF16) > len(m.nid.SzInfo) {
+		log.Printf("ShowBalloon: message truncated from %d to %d utf16 units", len(msgUTF16), len(m.nid.SzInfo))
+	}
+	copy(m.nid.SzInfoTitle[:], titleUTF16)
+	copy(m.nid.SzInfo[:], msgUTF16)
 	m.nid.DwInfoFlags = 0x00000001 // NIIF_INFO
 	// NIF_INFO is required for balloon; include NIF_ICON + NIF_TIP to keep icon visible
 	m.nid.UFlags = NIF_INFO | NIF_ICON | NIF_TIP
@@ -561,13 +573,21 @@ func trayWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 			}
 		case IDM_STOP:
 			if mgr != nil && mgr.handler != nil && mgr.handler.OnStopTimer != nil {
-				mgr.handler.OnStopTimer()
+				// Dispatch on a goroutine — OnStopTimer invokes
+				// SignOut → ActivityMonitor.Stop →
+				// TrayManager.SetTimerActive, and the last call
+				// blocks on m.mu which the message loop also
+				// needs. Running synchronously here deadlocks
+				// the tray. OnShowWindow and OnQuit already use
+				// this pattern; OnStopTimer was the outlier.
+				// See V3-H6.
+				go mgr.handler.OnStopTimer()
 			}
 		case IDM_DASHBOARD:
 			openBrowser(config.Get().WebDashboardURL)
 		case IDM_QUIT:
 			if mgr != nil && mgr.handler != nil && mgr.handler.OnQuit != nil {
-				mgr.handler.OnQuit()
+				go mgr.handler.OnQuit()
 			}
 		}
 		return 0
@@ -714,13 +734,6 @@ func createDotOverlayIcon(baseIcon uintptr) uintptr {
 		y := int32(size) - dotSize
 		pSelectObject.Call(memDC, greenBrush)
 		pEllipse.Call(memDC, uintptr(x), uintptr(y), uintptr(int32(size)), uintptr(int32(size)))
-
-		// White border around dot
-		whiteBrush, _, _ := pCreateSolidBrush.Call(0x00FFFFFF)
-		if whiteBrush != 0 {
-			// Slightly larger circle behind for border effect (drawn first next time)
-			pDeleteObject.Call(whiteBrush)
-		}
 		pDeleteObject.Call(greenBrush)
 	}
 

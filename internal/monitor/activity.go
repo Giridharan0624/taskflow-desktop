@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -177,14 +178,24 @@ func (m *ActivityMonitor) Stop() {
 // returns normally — we'd rather send one extra heartbeat that the
 // backend ignores than drop real activity data on the floor.
 func (m *ActivityMonitor) flushPendingLocked() {
+	// Keep the lock held across the "has data?" decision. Previously
+	// this released the lock, then re-entered sendCurrentBucket which
+	// re-acquired it — during the gap a concurrent path could have
+	// reset the bucket, leading to a spurious 0/0/0 heartbeat.
+	// Stop() has already drained goroutines by the time we get here,
+	// so this path is guaranteed to run single-threaded — but holding
+	// the lock eliminates the fragility if that assumption ever
+	// slips. See V3-M3.
 	m.mu.Lock()
 	hasData := m.keyboardCount > 0 || m.mouseCount > 0 ||
 		m.activeSeconds > 0 || m.idleSeconds > 0 || len(m.appUsage) > 0
-	m.mu.Unlock()
 	if !hasData {
+		m.mu.Unlock()
 		return
 	}
-	m.sendCurrentBucket("")
+	// sendCurrentBucketLocked expects m.mu held and releases it
+	// internally after snapshotting, before issuing the HTTP call.
+	m.sendCurrentBucketLocked("")
 }
 
 // trackActivity runs every second to track idle state, input counts, and active window.
@@ -257,6 +268,13 @@ func (m *ActivityMonitor) trackActivity(ctx context.Context) {
 }
 
 // sendHeartbeats sends activity data to the backend every 5 minutes.
+//
+// Captures the timer state once at the top of each tick; if it flips
+// to inactive between this check and the HTTP call (user stopped the
+// timer, logout, session expired), the in-flight heartbeat will land
+// but the backend rejects it cleanly via session-id validation.
+// Clearer than re-checking inside sendCurrentBucket, and matches the
+// screenshot path. See V3-M8.
 func (m *ActivityMonitor) sendHeartbeats(ctx context.Context) {
 	ticker := time.NewTicker(HeartbeatInterval)
 	defer ticker.Stop()
@@ -283,7 +301,15 @@ func (m *ActivityMonitor) sendHeartbeats(ctx context.Context) {
 // activity rather than hardcoded zeros.
 func (m *ActivityMonitor) sendCurrentBucket(screenshotURL string) {
 	m.mu.Lock()
+	m.sendCurrentBucketLocked(screenshotURL)
+}
 
+// sendCurrentBucketLocked is the lock-holding variant. Caller MUST
+// hold m.mu; this function releases it internally after snapshotting
+// the bucket, then issues the HTTP call with no lock held (we must
+// never block I/O under the mutex). Used by flushPendingLocked to
+// avoid the lock-drop-relock race window. See V3-M3.
+func (m *ActivityMonitor) sendCurrentBucketLocked(screenshotURL string) {
 	// Deep-copy appUsage before releasing the lock. The live m.appUsage map is
 	// cleared in place by resetBucketLocked and mutated by trackActivity on the
 	// next tick; embedding the raw reference into the bucket would corrupt the
@@ -319,6 +345,16 @@ func (m *ActivityMonitor) sendCurrentBucket(screenshotURL string) {
 		bucket["keyboard_count"], bucket["mouse_count"], bucket["active_seconds"], bucket["idle_seconds"], topApp, screenshotURL != "")
 
 	if err := m.apiClient.SendActivityHeartbeat(bucket); err != nil {
+		// If the error is that we're no longer authenticated, stop
+		// the monitor from this goroutine. Without this, a race
+		// where auth cleared before ActivityMonitor.Stop() was
+		// called would leave sendHeartbeats logging errors every 5
+		// min forever. See V3-M5.
+		if errors.Is(err, api.ErrNotAuthenticated) {
+			log.Println("Heartbeat aborted: not authenticated — stopping monitor")
+			go m.Stop()
+			return
+		}
 		log.Printf("Failed to send activity heartbeat: %v", err)
 	} else {
 		log.Println("Heartbeat sent successfully")

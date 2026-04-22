@@ -125,6 +125,13 @@ func invalidateX11Locked() {
 	x11Once = sync.Once{}
 }
 
+// maxAtomCacheEntries caps the per-connection atom cache so a malicious
+// or buggy X client feeding us an unbounded stream of unique window-
+// property names cannot exhaust memory. In practice we use ~20 atoms
+// (EWMH + UTF8_STRING + a few class hints); 256 is a paranoid ceiling.
+// See V3-L1.
+const maxAtomCacheEntries = 256
+
 // atom resolves an EWMH atom name to its numeric ID, caching the result.
 // Returns 0 on failure — callers that pass 0 to xproto.GetProperty will
 // receive an X error which propagates as an empty reply, matching the
@@ -135,11 +142,17 @@ func (x *x11) atom(name string) xproto.Atom {
 	if a, ok := x.atoms[name]; ok {
 		return a
 	}
+	// Don't cache past the cap — newer names will be resolved each
+	// call (slow but correct) instead of evicting anything, because
+	// the atoms we care about (EWMH) are resolved at startup and we
+	// don't want them displaced by garbage.
 	reply, err := xproto.InternAtom(x.conn, false, uint16(len(name)), name).Reply()
 	if err != nil || reply == nil {
 		return 0
 	}
-	x.atoms[name] = reply.Atom
+	if len(x.atoms) < maxAtomCacheEntries {
+		x.atoms[name] = reply.Atom
+	}
 	return reply.Atom
 }
 
@@ -155,6 +168,17 @@ func (x *x11) atom(name string) xproto.Atom {
 // Without that, a dead connection would silently keep returning 0
 // idle forever, inflating the keyboard heuristic's false-press rate
 // until the next app restart. See V2-L2.
+//
+// Stale-pointer contract (V3-H8): `x` is obtained from getX11() which
+// takes x11Mu. Between that return and QueryInfo() below, another
+// goroutine's getIdleMs error path can call invalidateX11Locked() and
+// close x.conn. QueryInfo() will then return an error rather than
+// crash (xgb treats a closed conn as an I/O error), and the
+// error-handling branch below redundantly invalidates — guarded by
+// `x11Inst == x` so two stale callers don't re-invalidate a freshly-
+// reconnected instance. This is intentional: the race is harmless
+// (one extra error log per racing goroutine, no crash) and avoiding
+// it would require per-call locking that adds cost to every tick.
 func (x *x11) getIdleMs() int {
 	if x == nil || !x.haveScreensaver {
 		return 0

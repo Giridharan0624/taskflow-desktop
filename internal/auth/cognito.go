@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	cognito "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
 	"github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider/types"
+	"golang.org/x/sync/singleflight"
 
 	"taskflow-desktop/internal/config"
 	"taskflow-desktop/internal/state"
@@ -73,6 +74,14 @@ type Service struct {
 
 	mu     sync.Mutex
 	tokens *Tokens
+
+	// refreshGroup coalesces concurrent refresh attempts for the same
+	// user. Before this was added, the heartbeat goroutine + screenshot
+	// upload + UI thread could all hit 401 simultaneously and each fire
+	// a Cognito InitiateAuth; Cognito then rate-limited or locked the
+	// account. Keyed by refresh-token (one per identity) so different
+	// users don't collide. See V3-H1.
+	refreshGroup singleflight.Group
 
 	// Challenge state for NEW_PASSWORD_REQUIRED. Never serialized over IPC —
 	// kept entirely on the Go side so the JS renderer cannot read the
@@ -152,7 +161,7 @@ func (s *Service) Login(identifier, password string) (*LoginResult, error) {
 	defer cancel()
 	result, err := s.client.InitiateAuth(ctx, input)
 	if err != nil {
-		return nil, fmt.Errorf("authentication failed: %w", err)
+		return nil, fmt.Errorf("authentication failed: %s", redactAWSError(err))
 	}
 
 	// Handle NEW_PASSWORD_REQUIRED challenge (first-time login).
@@ -234,7 +243,7 @@ func (s *Service) CompleteNewPasswordChallenge(newPassword string) error {
 	defer cancel()
 	result, err := s.client.RespondToAuthChallenge(ctx, input)
 	if err != nil {
-		return fmt.Errorf("failed to set new password: %w", err)
+		return fmt.Errorf("failed to set new password: %s", redactAWSError(err))
 	}
 
 	if result.AuthenticationResult == nil {
@@ -348,33 +357,89 @@ func (s *Service) Logout() error {
 // refresh token and returns the new (Id/Access) tokens without touching
 // s.tokens. Used by TryRestoreSession (to verify before committing) and
 // by refreshTokensLocked (for in-session refresh).
+//
+// Concurrent calls with the SAME refresh token are coalesced via
+// singleflight so a 401 storm across heartbeat + screenshot + UI
+// threads produces one Cognito call, not N. See V3-H1.
 func (s *Service) doRefreshCall(refreshToken string) (*Tokens, error) {
 	if refreshToken == "" {
 		return nil, errors.New("no refresh token available")
 	}
-	input := &cognito.InitiateAuthInput{
-		AuthFlow: types.AuthFlowTypeRefreshTokenAuth,
-		ClientId: aws.String(s.clientID),
-		AuthParameters: map[string]string{
-			"REFRESH_TOKEN": refreshToken,
-		},
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), cognitoCallTimeout)
-	defer cancel()
-	result, err := s.client.InitiateAuth(ctx, input)
+
+	// Keyed by refresh token — each identity coalesces independently.
+	// Use a short prefix so even if the key leaked into a log it is
+	// not a usable token.
+	key := refreshTokenFingerprint(refreshToken)
+	v, err, _ := s.refreshGroup.Do(key, func() (any, error) {
+		input := &cognito.InitiateAuthInput{
+			AuthFlow: types.AuthFlowTypeRefreshTokenAuth,
+			ClientId: aws.String(s.clientID),
+			AuthParameters: map[string]string{
+				"REFRESH_TOKEN": refreshToken,
+			},
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), cognitoCallTimeout)
+		defer cancel()
+		result, err := s.client.InitiateAuth(ctx, input)
+		if err != nil {
+			// Redact — AWS SDK error strings can embed request
+			// metadata including the Authorization bearer in
+			// retry contexts. See V3-H4.
+			return nil, fmt.Errorf("cognito refresh: %s", redactAWSError(err))
+		}
+		if result.AuthenticationResult == nil {
+			return nil, fmt.Errorf("empty authentication result from refresh")
+		}
+		return &Tokens{
+			IDToken:     *result.AuthenticationResult.IdToken,
+			AccessToken: *result.AuthenticationResult.AccessToken,
+			ExpiresAt:   time.Now().Add(time.Duration(result.AuthenticationResult.ExpiresIn) * time.Second).Unix(),
+			// RefreshToken intentionally empty — callers fill it in.
+		}, nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("cognito refresh: %w", err)
+		return nil, err
 	}
-	if result.AuthenticationResult == nil {
-		return nil, fmt.Errorf("empty authentication result from refresh")
-	}
-	return &Tokens{
-		IDToken:     *result.AuthenticationResult.IdToken,
-		AccessToken: *result.AuthenticationResult.AccessToken,
-		ExpiresAt:   time.Now().Add(time.Duration(result.AuthenticationResult.ExpiresIn) * time.Second).Unix(),
-		// RefreshToken intentionally empty — callers fill it in.
-	}, nil
+	tokens := v.(*Tokens)
+	// Return a fresh struct so coalesced callers don't share the same
+	// pointer — mutation by one caller (e.g. filling RefreshToken)
+	// must not bleed into another's view.
+	copy := *tokens
+	return &copy, nil
 }
+
+// refreshTokenFingerprint returns a short, non-reversible identifier for
+// a refresh token, suitable as a singleflight key without leaking the
+// token itself into any string the runtime might surface.
+func refreshTokenFingerprint(rt string) string {
+	if len(rt) < 16 {
+		return "rt:" + rt
+	}
+	// First 8 + last 4 — enough entropy to distinguish identities
+	// without being a usable token if it appears in a log.
+	return "rt:" + rt[:8] + "…" + rt[len(rt)-4:]
+}
+
+// redactAWSError strips likely-tokeny substrings from a Cognito SDK
+// error before it lands in a log line. Catches: Authorization
+// headers that the SDK occasionally echoes in retry metadata, raw JWT
+// payloads, and anything that looks like a base64 blob of token
+// length. Not foolproof — the canonical fix is to never log raw SDK
+// errors — but this closes the known leakage path. See V3-H4.
+func redactAWSError(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	s = awsAuthHeaderRe.ReplaceAllString(s, "Authorization: <redacted>")
+	s = jwtLikeRe.ReplaceAllString(s, "<redacted-jwt>")
+	return s
+}
+
+var (
+	awsAuthHeaderRe = regexp.MustCompile(`(?i)authorization:\s*bearer\s+[A-Za-z0-9\-_\.]+`)
+	jwtLikeRe       = regexp.MustCompile(`eyJ[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+`)
+)
 
 // refreshTokensLocked refreshes the in-session tokens. Caller MUST hold
 // s.mu. On failure, clears s.tokens inline rather than calling Logout

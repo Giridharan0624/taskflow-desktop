@@ -37,6 +37,13 @@ type InputTracker struct {
 	mu            sync.Mutex
 	lastCursorX   int32
 	lastCursorY   int32
+	// cursorSeeded is false until the first successful GetCursorPos.
+	// Without this, a user whose cursor genuinely sits at (0,0) for
+	// the whole session never registers mouse movement — the delta
+	// check compares current (0,0) against the same initial (0,0)
+	// value. Seeding tracks "did we ever read a real position"
+	// instead of relying on the zero value. See V3-M1.
+	cursorSeeded  bool
 	lastKeyStates [256]bool
 }
 
@@ -44,12 +51,18 @@ type InputTracker struct {
 func NewInputTracker() *InputTracker {
 	t := &InputTracker{}
 
-	// Initialize cursor position
+	// Initialize cursor position. Only mark the baseline as seeded if
+	// the call actually succeeded — a failed GetCursorPos leaves pt
+	// zero-valued, which would be indistinguishable from a real
+	// (0,0) sample.
 	var pt POINT
-	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+	ret, _, _ := procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
 	t.mu.Lock()
-	t.lastCursorX = pt.X
-	t.lastCursorY = pt.Y
+	if ret != 0 {
+		t.lastCursorX = pt.X
+		t.lastCursorY = pt.Y
+		t.cursorSeeded = true
+	}
 	t.mu.Unlock()
 
 	return t
@@ -66,11 +79,17 @@ func (t *InputTracker) Reset() {
 	t.keyboardTotal.Store(0)
 	t.mouseTotal.Store(0)
 
-	// Reseed cursor baseline.
+	// Reseed cursor baseline; unseed on failure so the first real
+	// sample after reset is counted as movement. See V3-M1.
 	var pt POINT
-	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
-	t.lastCursorX = pt.X
-	t.lastCursorY = pt.Y
+	ret, _, _ := procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+	if ret != 0 {
+		t.lastCursorX = pt.X
+		t.lastCursorY = pt.Y
+		t.cursorSeeded = true
+	} else {
+		t.cursorSeeded = false
+	}
 
 	// Reseed key states — without this, a key held down across the
 	// Reset boundary would look newly-pressed on the next GetCounts
@@ -112,11 +131,18 @@ func (t *InputTracker) GetCounts() (keyboard uint32, mouse uint32) {
 		t.keyboardTotal.Add(uint32(keysPressed))
 	}
 
-	// Mouse movement via cursor position delta.
+	// Mouse movement via cursor position delta. The first successful
+	// sample after an unseeded reset seeds the baseline WITHOUT
+	// counting a movement — otherwise every Reset() would inject one
+	// phantom event.
 	var pt POINT
 	ret, _, _ := procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
 	if ret != 0 {
-		if pt.X != t.lastCursorX || pt.Y != t.lastCursorY {
+		if !t.cursorSeeded {
+			t.lastCursorX = pt.X
+			t.lastCursorY = pt.Y
+			t.cursorSeeded = true
+		} else if pt.X != t.lastCursorX || pt.Y != t.lastCursorY {
 			t.mouseTotal.Add(1)
 			t.lastCursorX = pt.X
 			t.lastCursorY = pt.Y

@@ -47,6 +47,12 @@ type CurrentTask struct {
 }
 
 // AppState holds the shared application state, safe for concurrent access.
+//
+// IMPORTANT: mu is a sync.RWMutex and is NOT re-entrant. Never call
+// another AppState method while holding mu — it will deadlock. If a
+// compound read is needed (e.g. "is timer active AND current task
+// non-nil"), add a new method that does the whole read under one
+// RLock, don't compose existing accessors. See V3-L5 / V3-M13.
 type AppState struct {
 	mu            sync.RWMutex
 	authenticated bool
@@ -123,6 +129,25 @@ func (s *AppState) IsTimerActive() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.attendance != nil && s.attendance.Status == "SIGNED_IN"
+}
+
+// TimerContext returns both the active-flag AND a deep copy of the
+// current task under a single RLock. Callers that need both must use
+// this — composing IsTimerActive() + GetAttendance().CurrentTask
+// takes the lock twice and can observe a transitional state where
+// Status flipped but CurrentTask hasn't been written yet. See V3-M13.
+func (s *AppState) TimerContext() (active bool, task *CurrentTask) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.attendance == nil || s.attendance.Status != "SIGNED_IN" {
+		return false, nil
+	}
+	active = true
+	if s.attendance.CurrentTask != nil {
+		cp := *s.attendance.CurrentTask
+		task = &cp
+	}
+	return active, task
 }
 
 // GetIdleSeconds returns the current idle duration.

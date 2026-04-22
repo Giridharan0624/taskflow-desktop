@@ -432,6 +432,12 @@ function Shell({
   const { isDark, toggle } = useTheme();
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [updating, setUpdating] = useState(false);
+  // packageManagedNotice is populated when the Go updater refuses to
+  // auto-install because this binary belongs to a system package
+  // manager (.deb/.rpm/snap). The button swaps to a read-only banner
+  // explaining the user should run `apt upgrade` instead of making
+  // the app loop on an install that will always fail. See V3-Mdeb.
+  const [packageManagedNotice, setPackageManagedNotice] = useState<string | null>(null);
 
   // Listen for update:available event from Go backend. Clear any stale
   // handler first (C-FE-2 pattern — defensive against Preact
@@ -441,7 +447,21 @@ function Shell({
     window.runtime.EventsOn("update:available", (info: UpdateInfo) => {
       if (info?.available) setUpdateInfo(info);
     });
-    return () => window.runtime.EventsOff("update:available");
+    window.runtime.EventsOff("update:package-managed");
+    window.runtime.EventsOn(
+      "update:package-managed",
+      (payload: { version?: string; message?: string }) => {
+        setPackageManagedNotice(
+          payload?.message ||
+            "A new version is available — use your system package manager to update.",
+        );
+        setUpdating(false);
+      },
+    );
+    return () => {
+      window.runtime.EventsOff("update:available");
+      window.runtime.EventsOff("update:package-managed");
+    };
   }, []);
 
   async function handleUpdate() {
@@ -502,13 +522,19 @@ function Shell({
         </div>
       </header>
 
-      {updateInfo && (
-        <div class="flex items-center justify-between px-3 py-2 bg-primary/10 border-b border-border">
-          <p class="text-xs font-medium text-primary">v{updateInfo.version} available</p>
-          <Button size="sm" class="h-7 px-3 text-xs" onClick={handleUpdate} disabled={updating}>
-            {updating ? "Updating…" : "Update Now"}
-          </Button>
+      {packageManagedNotice ? (
+        <div class="px-3 py-2 bg-primary/10 border-b border-border">
+          <p class="text-xs font-medium text-primary leading-snug">{packageManagedNotice}</p>
         </div>
+      ) : (
+        updateInfo && (
+          <div class="flex items-center justify-between px-3 py-2 bg-primary/10 border-b border-border">
+            <p class="text-xs font-medium text-primary">v{updateInfo.version} available</p>
+            <Button size="sm" class="h-7 px-3 text-xs" onClick={handleUpdate} disabled={updating}>
+              {updating ? "Updating…" : "Update Now"}
+            </Button>
+          </div>
+        )
       )}
 
       <div class="flex-1 overflow-y-auto">{children}</div>

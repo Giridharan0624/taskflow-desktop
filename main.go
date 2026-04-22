@@ -11,6 +11,7 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"taskflow-desktop/internal/state"
 )
@@ -75,23 +76,42 @@ func main() {
 	applyPlatformOptions(appOptions)
 
 	// Catch SIGINT (Ctrl-C) and SIGTERM (systemctl stop, pkill,
-	// session-manager logout) so we get a chance to auto-sign-out
-	// before the process dies. Wails handles Windows
-	// WM_QUERYENDSESSION / WM_ENDSESSION through OnShutdown on its
-	// own; this hook is the Unix equivalent.
+	// session-manager logout) so we get a chance to auto-sign-out AND
+	// drain background services (activity monitor, tray) before the
+	// process dies. Wails handles Windows WM_QUERYENDSESSION /
+	// WM_ENDSESSION through OnShutdown on its own; this hook is the
+	// Unix equivalent.
 	//
-	// We hand off to app.autoSignOutIfRunning with a short budget so
-	// a shutdown sequence that gives us only a few seconds before
-	// SIGKILL still has time for one backend round-trip. After that
-	// we call os.Exit(0) explicitly — Wails' own signal handling can
-	// race here, and the explicit exit guarantees the process
-	// terminates even if something in the runtime is wedged.
+	// We MUST NOT call os.Exit(0) directly here — it bypasses Wails'
+	// OnShutdown, which means ActivityMonitor.Stop() never flushes
+	// the in-memory activity bucket (up to 5 min of keyboard/mouse
+	// counters silently lost) and TrayManager.Stop() never runs
+	// (leaving a ghost icon on Windows). Instead we auto-sign-out,
+	// then call runtime.Quit which runs OnShutdown and exits
+	// gracefully. A watchdog goroutine is the fallback for the
+	// genuinely-wedged case. See V3-C2.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		sig := <-sigCh
-		log.Printf("received %s — auto-signing-out and exiting", sig)
+		log.Printf("received %s — auto-signing-out and requesting graceful shutdown", sig)
 		app.autoSignOutIfRunning(3 * time.Second)
+		if ctx := app.ctx; ctx != nil {
+			wailsruntime.Quit(ctx)
+			// Hard watchdog: if Wails doesn't tear down within 5 s
+			// the runtime is wedged and the user would otherwise
+			// see a zombie process. Exit with code 0 so systemd /
+			// service managers don't treat it as a crash.
+			go func() {
+				time.Sleep(5 * time.Second)
+				log.Println("watchdog: Wails runtime did not exit within 5s after quit request — force-exiting")
+				closeLogFile()
+				os.Exit(0)
+			}()
+			return
+		}
+		// Wails never finished bootstrapping (ctx nil) — fall through
+		// to direct exit so a stuck startup still honors the signal.
 		closeLogFile()
 		os.Exit(0)
 	}()

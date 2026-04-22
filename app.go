@@ -634,6 +634,22 @@ func (a *App) InstallUpdate() error {
 	// haven't torn anything down yet, so the user can retry without
 	// having lost their session.
 	if err := updater.DownloadAndInstall(info); err != nil {
+		// Linux users who installed via .deb/.rpm/snap hit this
+		// path: the download + verify succeeded but the installer
+		// refused to overwrite a package-manager-owned binary. Tell
+		// the frontend to show the "run apt upgrade" message instead
+		// of a generic error. See V3-Mdeb.
+		if errors.Is(err, updater.ErrPackageManaged) {
+			runtime.EventsEmit(a.ctx, "update:package-managed", map[string]string{
+				"version": info.Version,
+				"message": "This build was installed via your system package manager. " +
+					"Run `sudo apt upgrade taskflow-desktop` (or your distro's equivalent) to update.",
+			})
+			a.TrayManager.ShowBalloon(
+				"Update available",
+				"Run your package manager (e.g. `sudo apt upgrade`) to update TaskFlow.",
+			)
+		}
 		return err
 	}
 	// Install succeeded — keep the flag claimed through shutdown so a
