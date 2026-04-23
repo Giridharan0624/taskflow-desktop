@@ -15,11 +15,41 @@ export function TaskSelector({ onStart, loading }: TaskSelectorProps) {
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [description, setDescription] = useState("");
   const [fetchError, setFetchError] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Unified fetcher used on mount AND by the refresh button. Clears
+  // any stale selection that no longer matches the returned list so
+  // the dropdown doesn't keep displaying a now-unassigned task. The
+  // Go client already falls back to the on-disk cache when the
+  // network is down, so this works offline too.
+  async function loadTasks() {
+    setRefreshing(true);
+    try {
+      const r = (await window.go.main.App.GetMyTasks()) || [];
+      setTasks(r);
+      setFetchError("");
+      // Reconcile selection — if the previously-selected task or
+      // project is no longer in the list (unassigned, closed),
+      // clear so the user picks again rather than starting a
+      // timer against a stale id.
+      setSelectedSource((prev) =>
+        prev && r.some((t) => t.projectId === prev) ? prev : ""
+      );
+      setSelectedTaskId((prev) =>
+        prev && r.some((t) => t.taskId === prev) ? prev : ""
+      );
+    } catch {
+      setFetchError("Failed to load tasks");
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   useEffect(() => {
-    window.go.main.App.GetMyTasks()
-      .then((r) => setTasks(r || []))
-      .catch(() => setFetchError("Failed to load tasks"));
+    loadTasks();
+    // Intentional empty dep list — mount-once. loadTasks is stable
+    // enough (closes over setters only).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const projects = useMemo(() => {
@@ -105,6 +135,27 @@ export function TaskSelector({ onStart, loading }: TaskSelectorProps) {
             onChange={setSelectedTaskId}
           />
         )}
+
+        {/* Refresh pulls the latest assignment from the backend.
+            Fixed 36×36 so the flex-1 dropdowns stay consistent
+            regardless of whether the task dropdown is rendered. */}
+        <button
+          type="button"
+          onClick={loadTasks}
+          disabled={refreshing}
+          title={refreshing ? "Refreshing…" : "Refresh tasks and projects"}
+          aria-label="Refresh tasks"
+          class={cn(
+            "flex-shrink-0 h-9 w-9 rounded-md border border-input bg-background",
+            "text-muted-foreground shadow-sm transition-all",
+            "hover:border-ring/50 hover:text-foreground",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+            "disabled:opacity-60 disabled:cursor-not-allowed",
+            "flex items-center justify-center"
+          )}
+        >
+          <RefreshIcon spinning={refreshing} />
+        </button>
       </div>
 
       {fetchError && (
@@ -338,6 +389,24 @@ function MeetingIcon() {
   return (
     <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
       <path stroke-linecap="round" stroke-linejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+    </svg>
+  );
+}
+
+function RefreshIcon({ spinning }: { spinning: boolean }) {
+  return (
+    <svg
+      class={cn("w-3.5 h-3.5 transition-transform", spinning && "animate-spin")}
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      stroke-width="2"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M4 4v5h5M20 20v-5h-5M4.5 15a8 8 0 0014.5 2M19.5 9A8 8 0 005 7"
+      />
     </svg>
   );
 }

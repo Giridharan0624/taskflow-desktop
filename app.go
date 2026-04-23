@@ -16,6 +16,7 @@ import (
 	"taskflow-desktop/internal/auth"
 	"taskflow-desktop/internal/config"
 	"taskflow-desktop/internal/monitor"
+	"taskflow-desktop/internal/queue"
 	"taskflow-desktop/internal/state"
 	"taskflow-desktop/internal/tray"
 	"taskflow-desktop/internal/updater"
@@ -53,6 +54,11 @@ type App struct {
 	APIClient       *api.Client
 	ActivityMonitor *monitor.ActivityMonitor
 	TrayManager     *tray.Manager
+	// EventLog captures timer-session state changes so an offline
+	// SignIn / SignOut / task-switch replays once the network
+	// returns. Nil if the log couldn't be created — app still
+	// works, just without replay. See V3-offline.
+	EventLog *queue.EventLog
 }
 
 // autoSignOutIfRunning posts sign-out to the backend if a timer is
@@ -96,6 +102,12 @@ func (a *App) startup(ctx context.Context) {
 	a.AuthService = auth.NewService(a.State)
 	a.APIClient = api.NewClient(a.AuthService, a.State)
 	a.ActivityMonitor = monitor.NewActivityMonitor(a.APIClient, a.State)
+
+	if el, err := queue.NewEventLog(); err != nil {
+		log.Printf("startup: event log disabled (%v) — no offline replay of timer events", err)
+	} else {
+		a.EventLog = el
+	}
 
 	a.TrayManager = tray.NewManager(a.State)
 
@@ -381,6 +393,10 @@ func (a *App) fetchAttendance() {
 	}
 	if a.networkErrorCount.Swap(0) > 0 {
 		runtime.EventsEmit(a.ctx, "network:restored", nil)
+		// Kick off event-log replay in a goroutine — the drain
+		// issues HTTP calls and we don't want to block the
+		// attendance poll loop while it runs. See V3-offline.
+		go a.drainEventLog(a.currentSessionCtx())
 	}
 
 	a.State.SetAttendance(attendance)
@@ -461,6 +477,10 @@ func (a *App) SetNewPassword(newPassword string) error {
 func (a *App) Logout() error {
 	a.stopBackgroundServices()
 	a.ActivityMonitor.Stop()
+	// Clear the on-disk tasks cache so user B on a shared machine
+	// doesn't see user A's task list on an offline launch. See
+	// V3-offline.
+	a.APIClient.ClearTasksCache()
 	authErr := a.AuthService.Logout()
 	a.State.SetAuthenticated(false)
 	a.State.SetAttendance(nil)
@@ -510,6 +530,18 @@ func (a *App) SignIn(data api.StartTimerData) (*api.Attendance, error) {
 	data.TaskTitle = strings.TrimSpace(data.TaskTitle)
 	data.ProjectName = strings.TrimSpace(data.ProjectName)
 
+	// Record the intent BEFORE the network call so a crash / kill
+	// between now and the server acknowledging still leaves an
+	// audit trail the replay can use. The server is idempotent for
+	// sign-in so a double-apply on reconnect is safe. See V3-offline.
+	a.recordEvent(queue.EventSignIn, map[string]interface{}{
+		"task_id":      data.TaskID,
+		"project_id":   data.ProjectID,
+		"task_title":   data.TaskTitle,
+		"project_name": data.ProjectName,
+		"description":  data.Description,
+	})
+
 	attendance, err := a.APIClient.SignIn(data)
 	if err != nil {
 		return nil, err
@@ -529,6 +561,12 @@ func (a *App) SignOut() (*api.Attendance, error) {
 	if err := a.requireAuth(); err != nil {
 		return nil, err
 	}
+
+	// Same pre-network-call audit as SignIn. If the server call
+	// fails we still stop local tracking (next fetchAttendance
+	// reconciles) and the event replay catches up later.
+	a.recordEvent(queue.EventSignOut, nil)
+
 	attendance, err := a.APIClient.SignOut()
 	if err != nil {
 		return nil, err
@@ -539,6 +577,92 @@ func (a *App) SignOut() (*api.Attendance, error) {
 	a.ActivityMonitor.Stop() // Stop monitoring when timer stops
 	runtime.EventsEmit(a.ctx, "attendance:updated", attendance)
 	return attendance, nil
+}
+
+// recordEvent appends a timer-session state change to the offline
+// event log. Best-effort: a log write failure is noted but never
+// blocks the caller's operation. Nil receiver / nil log is a no-op
+// so callers don't need to check.
+func (a *App) recordEvent(kind string, payload map[string]interface{}) {
+	if a == nil || a.EventLog == nil {
+		return
+	}
+	if err := a.EventLog.Append(kind, payload); err != nil {
+		log.Printf("eventlog: append %s failed: %v", kind, err)
+	}
+}
+
+// drainEventLog replays any queued timer events to the backend.
+// Called on network:restored and on a periodic ticker. Backend
+// endpoints are idempotent by attendance date — replaying a
+// SignIn that the server already recorded is a no-op.
+func (a *App) drainEventLog(ctx context.Context) {
+	if a.EventLog == nil {
+		return
+	}
+	sent := a.EventLog.Drain(ctx, func(ev queue.Event) error {
+		switch ev.Kind {
+		case queue.EventSignIn:
+			// Reconstruct StartTimerData from payload. Missing
+			// fields collapse to empty strings — the backend
+			// validates (it will reject truly empty ones), and a
+			// successful original SignIn means these were valid.
+			d := api.StartTimerData{}
+			if p := ev.Payload; p != nil {
+				if v, ok := p["task_id"].(string); ok {
+					d.TaskID = v
+				}
+				if v, ok := p["project_id"].(string); ok {
+					d.ProjectID = v
+				}
+				if v, ok := p["task_title"].(string); ok {
+					d.TaskTitle = v
+				}
+				if v, ok := p["project_name"].(string); ok {
+					d.ProjectName = v
+				}
+				if v, ok := p["description"].(string); ok {
+					d.Description = v
+				}
+			}
+			if _, err := a.APIClient.SignIn(d); err != nil {
+				// "already signed in" is the happy replay case —
+				// treat 4xx as "server already knows, drop the
+				// event". Only network errors keep the event
+				// queued.
+				if errors.Is(err, api.ErrUnauthorized) || errors.Is(err, api.ErrNotAuthenticated) {
+					return err
+				}
+				if strings.Contains(err.Error(), "network error") {
+					return err
+				}
+				// Any other backend-side error: server rejected
+				// the replay as invalid state; drop it and move
+				// on.
+				log.Printf("eventlog replay SignIn: server rejected (%v) — dropping event", err)
+				return nil
+			}
+		case queue.EventSignOut:
+			if _, err := a.APIClient.SignOut(); err != nil {
+				if errors.Is(err, api.ErrUnauthorized) || errors.Is(err, api.ErrNotAuthenticated) {
+					return err
+				}
+				if strings.Contains(err.Error(), "network error") {
+					return err
+				}
+				log.Printf("eventlog replay SignOut: server rejected (%v) — dropping event", err)
+				return nil
+			}
+		default:
+			// Unknown event kind — drop rather than block the
+			// queue forever.
+			log.Printf("eventlog replay: dropping unknown kind %q", ev.Kind)
+		}
+		return nil
+	})
+	if sent > 0 {
+		log.Printf("eventlog drain: %d events replayed", sent)
+	}
 }
 
 // GetMyAttendance returns today's attendance. Called from frontend on mount.

@@ -16,6 +16,7 @@ import (
 
 	"taskflow-desktop/internal/auth"
 	"taskflow-desktop/internal/config"
+	"taskflow-desktop/internal/queue"
 	"taskflow-desktop/internal/security"
 	"taskflow-desktop/internal/state"
 )
@@ -111,6 +112,12 @@ type Client struct {
 	// receive a copy, never a live pointer.
 	settingsMu sync.RWMutex
 	settings   *OrgSettings
+
+	// tasksCache persists the last successful /users/me/tasks
+	// response so the TaskSelector can render something while
+	// offline. Best-effort: nil if the on-disk cache couldn't be
+	// created. See V3-offline.
+	tasksCache *queue.TasksCache
 }
 
 // NewClient creates a new API client with HTTPS enforced and TLS 1.3 minimum.
@@ -174,12 +181,18 @@ func NewClient(authService *auth.Service, appState *state.AppState) *Client {
 		CheckRedirect: checkRedirect,
 	})
 
-	return &Client{
+	c := &Client{
 		http:        client,
 		uploads:     uploads,
 		authService: authService,
 		appState:    appState,
 	}
+	if tc, err := queue.NewTasksCache(); err != nil {
+		log.Printf("api: tasks cache disabled (%v) — offline launch will show empty list", err)
+	} else {
+		c.tasksCache = tc
+	}
+	return c
 }
 
 // request creates an authenticated request with auto-refreshed JWT.
@@ -201,9 +214,16 @@ func (c *Client) request() (*resty.Request, error) {
 	return c.http.R().SetHeader("Authorization", "Bearer "+token), nil
 }
 
-// GetOrgSettings fetches /orgs/current/settings, refreshes the in-memory
-// cache, and returns the result. Used by the activity loop to honor
-// per-tenant feature toggles (specifically `screenshots`).
+// GetOrgSettings fetches the current org's settings and refreshes the
+// in-memory cache.
+//
+// Note: we call `GET /orgs/current` (which returns org + settings +
+// plan + pipelines) rather than `GET /orgs/current/settings` because
+// the latter route was never deployed — only PUT is wired up there.
+// Calling the nonexistent GET produces a 403 IAM-signature error from
+// API Gateway's default fallthrough handler. The parent endpoint
+// gives us what we need as a single hydration call anyway; we just
+// pluck out the settings field. See V3-client.
 //
 // On any error the previous cached value is preserved — a transient
 // network blip never flips the feature gate. Callers that need the
@@ -214,7 +234,7 @@ func (c *Client) GetOrgSettings() (*OrgSettings, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := req.Get("/orgs/current/settings")
+	resp, err := req.Get("/orgs/current")
 	if err != nil {
 		return nil, fmt.Errorf("network error: %w", err)
 	}
@@ -225,14 +245,25 @@ func (c *Client) GetOrgSettings() (*OrgSettings, error) {
 	if err != nil {
 		return nil, fmt.Errorf("settings response: %w", err)
 	}
-	var settings OrgSettings
-	if err := json.Unmarshal(converted, &settings); err != nil {
-		return nil, fmt.Errorf("failed to parse settings: %w", err)
+	// GET /orgs/current returns {org, settings, plan, pipelines}.
+	// Extract just the settings field; tolerate null (a brand-new
+	// org that hasn't been set up yet) by returning an empty
+	// OrgSettings so fail-closed feature gates (e.g. screenshots)
+	// still behave correctly.
+	var envelope struct {
+		Settings *OrgSettings `json:"settings"`
+	}
+	if err := json.Unmarshal(converted, &envelope); err != nil {
+		return nil, fmt.Errorf("failed to parse settings envelope: %w", err)
+	}
+	settings := envelope.Settings
+	if settings == nil {
+		settings = &OrgSettings{Features: map[string]bool{}}
 	}
 	c.settingsMu.Lock()
-	c.settings = &settings
+	c.settings = settings
 	c.settingsMu.Unlock()
-	return &settings, nil
+	return settings, nil
 }
 
 // CachedSettings returns the last successfully fetched settings, or nil
@@ -402,15 +433,27 @@ func (c *Client) SignOutContext(ctx context.Context) (*Attendance, error) {
 func (c *Client) GetMyTasks() ([]Task, error) {
 	req, err := c.request()
 	if err != nil {
+		// Auth gone (post-logout race): don't fall through to the
+		// offline cache — it might leak another user's task list on
+		// a shared machine. See V3-offline.
 		return nil, err
 	}
 
 	resp, err := req.Get("/users/me/tasks")
 	if err != nil {
+		// Transport error (network down, DNS fail, TLS issue). Try
+		// the on-disk cache so the user can still pick a task.
+		if cached, ok := c.loadCachedTasks(); ok {
+			log.Printf("GetMyTasks: network error (%v) — serving cached task list", err)
+			return cached, nil
+		}
 		return nil, fmt.Errorf("network error: %w", err)
 	}
 
 	if resp.StatusCode() != 200 {
+		// 4xx/5xx: the backend is reachable and said no. Don't
+		// serve a stale cache — the live state is authoritative
+		// for auth/permission errors.
 		return nil, apiError("fetch tasks", resp)
 	}
 
@@ -423,7 +466,46 @@ func (c *Client) GetMyTasks() ([]Task, error) {
 		return nil, fmt.Errorf("failed to parse tasks: %w", err)
 	}
 
+	// Save the converted (camelCase) bytes so a next-launch cold
+	// read unmarshals directly without running snakeToCamel again.
+	if c.tasksCache != nil {
+		if serr := c.tasksCache.Store(converted); serr != nil {
+			log.Printf("GetMyTasks: cache store failed: %v", serr)
+		}
+	}
+
 	return tasks, nil
+}
+
+// loadCachedTasks returns the last-known-good tasks from disk, or
+// (nil, false) if there's nothing cached. Used as a fallback when
+// the live fetch fails at transport level.
+func (c *Client) loadCachedTasks() ([]Task, bool) {
+	if c.tasksCache == nil {
+		return nil, false
+	}
+	var tasks []Task
+	ok, err := c.tasksCache.LoadInto(&tasks)
+	if err != nil {
+		log.Printf("loadCachedTasks: %v", err)
+		return nil, false
+	}
+	if !ok || len(tasks) == 0 {
+		return nil, false
+	}
+	return tasks, true
+}
+
+// ClearTasksCache wipes the on-disk task list. Called from Logout
+// so a shared machine doesn't show user A's tasks to user B on a
+// subsequent offline launch.
+func (c *Client) ClearTasksCache() {
+	if c.tasksCache == nil {
+		return
+	}
+	// Overwriting with an empty list is simpler than deleting the
+	// file — LoadInto treats [] as "no cached data" naturally.
+	_ = c.tasksCache.Store([]byte("[]"))
 }
 
 // GetCurrentUser fetches GET /users/me.

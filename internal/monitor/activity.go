@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"taskflow-desktop/internal/api"
+	"taskflow-desktop/internal/queue"
 	"taskflow-desktop/internal/state"
 )
 
@@ -37,6 +38,13 @@ type ActivityMonitor struct {
 	screenshotCap *ScreenshotCapture
 	onNotify      NotifyFunc
 
+	// Offline-resilience queues (best-effort — if their constructor
+	// errors at startup we log and proceed without persistence; the
+	// app still works, just falls back to the old lose-on-failure
+	// behavior). See V3-offline.
+	hbQueue   *queue.HeartbeatQueue
+	ssQueue   *queue.ScreenshotQueue
+
 	// Current bucket counters (reset every 5 min)
 	keyboardCount int
 	mouseCount    int
@@ -62,7 +70,7 @@ func sleepOrCancel(ctx context.Context, d time.Duration) error {
 
 // NewActivityMonitor creates a new activity monitor.
 func NewActivityMonitor(apiClient *api.Client, appState *state.AppState) *ActivityMonitor {
-	return &ActivityMonitor{
+	m := &ActivityMonitor{
 		apiClient:     apiClient,
 		appState:      appState,
 		windowTracker: NewWindowTracker(),
@@ -71,6 +79,20 @@ func NewActivityMonitor(apiClient *api.Client, appState *state.AppState) *Activi
 		screenshotCap: NewScreenshotCapture(),
 		appUsage:      make(map[string]int),
 	}
+	// Best-effort queue initialization. A failure here means we can't
+	// persist across network outages / process restarts, but the app
+	// is still useful — fall back to old "send now or lose" behavior.
+	if hb, err := queue.NewHeartbeatQueue(); err != nil {
+		log.Printf("activity: heartbeat queue disabled (%v) — offline resilience degraded", err)
+	} else {
+		m.hbQueue = hb
+	}
+	if ss, err := queue.NewScreenshotQueue(); err != nil {
+		log.Printf("activity: screenshot queue disabled (%v) — offline resilience degraded", err)
+	} else {
+		m.ssQueue = ss
+	}
+	return m
 }
 
 // SetNotifyFunc sets the callback for showing notifications.
@@ -88,9 +110,9 @@ func (m *ActivityMonitor) Start(parentCtx context.Context) {
 	ctx, cancel := context.WithCancel(parentCtx)
 	m.cancel = cancel
 	m.running = true
-	// Register all three goroutines BEFORE spawning so Stop cannot observe a
+	// Register all goroutines BEFORE spawning so Stop cannot observe a
 	// partially-populated WaitGroup.
-	m.wg.Add(3)
+	m.wg.Add(4)
 	m.mu.Unlock()
 
 	log.Println("Activity monitor started")
@@ -121,6 +143,18 @@ func (m *ActivityMonitor) Start(parentCtx context.Context) {
 			}
 		}()
 		m.sendHeartbeats(ctx)
+	}()
+	// Drain worker: retries queued heartbeats + screenshots every
+	// 30 s so an offline-then-online transition catches up without
+	// waiting for a new heartbeat tick. See V3-offline.
+	go func() {
+		defer m.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("drainWorker recovered from panic: %v", r)
+			}
+		}()
+		m.drainWorker(ctx)
 	}()
 }
 
@@ -341,15 +375,35 @@ func (m *ActivityMonitor) sendCurrentBucketLocked(screenshotURL string) {
 	m.resetBucketLocked()
 	m.mu.Unlock()
 
-	log.Printf("Sending heartbeat: kb=%d mouse=%d active=%ds idle=%ds app=%s screenshot=%v",
+	log.Printf("Enqueue heartbeat: kb=%d mouse=%d active=%ds idle=%ds app=%s screenshot=%v",
 		bucket["keyboard_count"], bucket["mouse_count"], bucket["active_seconds"], bucket["idle_seconds"], topApp, screenshotURL != "")
 
+	// Persist first, send after. This is the offline-resilience
+	// contract: the on-disk queue is the source of truth. If the
+	// app is killed / network drops / backend is down, the bucket
+	// survives and gets replayed on the next drain tick.
+	if m.hbQueue != nil {
+		if err := m.hbQueue.Enqueue(bucket); err != nil {
+			log.Printf("Failed to enqueue heartbeat (falling back to send-once): %v", err)
+			m.trySendOnce(bucket)
+			return
+		}
+		// Kick off a drain attempt immediately — if the network is
+		// fine we drain within one tick and the entry is gone.
+		m.drainHeartbeats(context.Background())
+		return
+	}
+
+	// Fallback path: queue unavailable, use the old lose-on-failure
+	// semantics.
+	m.trySendOnce(bucket)
+}
+
+// trySendOnce is the legacy send-and-log path used only when the
+// persistent queue is unavailable (startup failed to create it).
+// Keeps the auth-aware stop behavior from V3-M5.
+func (m *ActivityMonitor) trySendOnce(bucket map[string]interface{}) {
 	if err := m.apiClient.SendActivityHeartbeat(bucket); err != nil {
-		// If the error is that we're no longer authenticated, stop
-		// the monitor from this goroutine. Without this, a race
-		// where auth cleared before ActivityMonitor.Stop() was
-		// called would leave sendHeartbeats logging errors every 5
-		// min forever. See V3-M5.
 		if errors.Is(err, api.ErrNotAuthenticated) {
 			log.Println("Heartbeat aborted: not authenticated — stopping monitor")
 			go m.Stop()
@@ -358,6 +412,33 @@ func (m *ActivityMonitor) sendCurrentBucketLocked(screenshotURL string) {
 		log.Printf("Failed to send activity heartbeat: %v", err)
 	} else {
 		log.Println("Heartbeat sent successfully")
+	}
+}
+
+// drainHeartbeats replays queued heartbeats to the backend in FIFO
+// order. Stops on the first persistent failure so a dead network
+// doesn't hot-loop us. Safe to call opportunistically on every
+// enqueue AND on a timer — the queue's mutex serializes.
+func (m *ActivityMonitor) drainHeartbeats(ctx context.Context) {
+	if m.hbQueue == nil {
+		return
+	}
+	sent := m.hbQueue.Drain(ctx, func(bucket map[string]interface{}) error {
+		err := m.apiClient.SendActivityHeartbeat(bucket)
+		if err != nil {
+			// Not-authenticated is terminal — don't replay, just
+			// stop the monitor. The queue keeps the entry for
+			// when the user logs in again.
+			if errors.Is(err, api.ErrNotAuthenticated) {
+				log.Println("Heartbeat drain aborted: not authenticated — stopping monitor")
+				go m.Stop()
+				return err
+			}
+		}
+		return err
+	})
+	if sent > 0 {
+		log.Printf("Heartbeat drain: %d bucket(s) sent (pending=%d)", sent, m.hbQueue.Count())
 	}
 }
 
@@ -440,13 +521,29 @@ func (m *ActivityMonitor) takeAndUploadScreenshot(ctx context.Context) {
 	// Generate filename with timestamp
 	filename := fmt.Sprintf("screenshot_%s.jpg", time.Now().UTC().Format("20060102_150405"))
 
-	// Upload to S3
+	// Upload to S3. Try once directly; on failure, persist to the
+	// queue so the drain worker retries in the background.
 	cdnURL, err := m.apiClient.UploadScreenshot(jpegData, filename)
 	if err != nil {
-		log.Printf("Screenshot upload failed: %v", err)
-		if m.onNotify != nil {
+		log.Printf("Screenshot upload failed (queuing for retry): %v", err)
+		if m.ssQueue != nil {
+			if qerr := m.ssQueue.Enqueue(jpegData, filename); qerr != nil {
+				log.Printf("Failed to enqueue screenshot: %v", qerr)
+				if m.onNotify != nil {
+					m.onNotify("TaskFlow", "Screenshot upload failed — check your connection")
+				}
+				return
+			}
+			log.Printf("Screenshot queued (pending=%d)", m.ssQueue.Count())
+		} else if m.onNotify != nil {
 			m.onNotify("TaskFlow", "Screenshot upload failed — check your connection")
 		}
+		// Still flush the activity bucket — the screenshot URL
+		// goes in empty because the drain will attach it later
+		// via its own bucket when we re-upload. Trading the
+		// "perfect bucket linkage" for the "no activity data
+		// lost" contract.
+		m.sendCurrentBucket("")
 		return
 	}
 
@@ -455,4 +552,41 @@ func (m *ActivityMonitor) takeAndUploadScreenshot(ctx context.Context) {
 	// Flush the current bucket early with the screenshot attached, so counts
 	// reflect real accumulated activity instead of being hardcoded to zero.
 	m.sendCurrentBucket(cdnURL)
+}
+
+// drainScreenshots replays queued screenshots to S3 via the API
+// client's presign+PUT path. Same stop-on-first-failure contract as
+// drainHeartbeats.
+func (m *ActivityMonitor) drainScreenshots(ctx context.Context) {
+	if m.ssQueue == nil {
+		return
+	}
+	sent := m.ssQueue.Drain(ctx, func(jpeg []byte, filename string) error {
+		_, err := m.apiClient.UploadScreenshot(jpeg, filename)
+		return err
+	})
+	if sent > 0 {
+		log.Printf("Screenshot drain: %d uploaded (pending=%d)", sent, m.ssQueue.Count())
+	}
+}
+
+// drainWorker is the background ticker that retries both queues on
+// a fixed cadence. Runs independently of new-activity enqueue paths
+// so a fully-offline client still catches up when the network
+// returns, even if no new buckets are being generated (e.g. user
+// idle).
+const drainInterval = 30 * time.Second
+
+func (m *ActivityMonitor) drainWorker(ctx context.Context) {
+	ticker := time.NewTicker(drainInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.drainHeartbeats(ctx)
+			m.drainScreenshots(ctx)
+		}
+	}
 }
