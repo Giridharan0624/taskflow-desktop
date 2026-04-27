@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -17,12 +18,33 @@ const (
 	// HeartbeatInterval is how often activity data is sent to the backend.
 	HeartbeatInterval = 5 * time.Minute
 
-	// ScreenshotInterval is how often screenshots are taken.
-	ScreenshotInterval = 10 * time.Minute
+	// ScreenshotMinInterval / ScreenshotMaxInterval bracket the
+	// random window between captures: every screenshot fires at a
+	// uniformly-chosen moment in [9 min, 10 min) since the last
+	// one. The randomness defeats trivial mouse-jiggler / "hide
+	// the bad app at minute :09:55" patterns without changing the
+	// long-run average rate (~1 capture per 9.5 min).
+	ScreenshotMinInterval = 9 * time.Minute
+	ScreenshotMaxInterval = 10 * time.Minute
 
-	// ScreenshotWarningTime is the notification shown before capture.
-	ScreenshotWarningTime = 5 * time.Second
+	// ScreenshotWarningTime previously gated a 5 s pre-capture
+	// notification. The notification was removed (it was noisy on
+	// the user's tray and broadcast capture timing to anyone in
+	// shoulder-view). Kept the constant at 0 so any code path that
+	// still references it for cancellation behaves like an
+	// immediate capture.
+	ScreenshotWarningTime = 0
 )
+
+// nextScreenshotDelay returns a random duration uniformly distributed
+// in [ScreenshotMinInterval, ScreenshotMaxInterval). Uses math/rand
+// (no crypto needed — this is anti-evasion jitter, not a security
+// primitive). math/rand is auto-seeded since Go 1.20, so we don't
+// need an explicit Seed call.
+func nextScreenshotDelay() time.Duration {
+	span := int64(ScreenshotMaxInterval - ScreenshotMinInterval)
+	return ScreenshotMinInterval + time.Duration(rand.Int63n(span))
+}
 
 // NotifyFunc is a callback for showing notifications (e.g., tray balloon).
 type NotifyFunc func(title, message string)
@@ -324,6 +346,18 @@ func (m *ActivityMonitor) sendHeartbeats(ctx context.Context) {
 				m.resetBucket()
 				continue
 			}
+			// Per-tenant feature gate. When the OWNER turns
+			// `activity_monitoring` off in /settings/organization →
+			// Features, suppress the heartbeat. Mirrors the
+			// ScreenshotsEnabled() gate on the screenshot loop, and
+			// matches the backend's require_feature("activity_monitoring")
+			// guard on POST /activity/heartbeat — checking here avoids
+			// the round-trip + spurious 403 logs.
+			if !m.apiClient.ActivityMonitoringEnabled() {
+				log.Println("Heartbeat skipped: activity_monitoring disabled")
+				m.resetBucket()
+				continue
+			}
 			m.sendCurrentBucket("")
 		}
 	}
@@ -338,16 +372,19 @@ func (m *ActivityMonitor) sendCurrentBucket(screenshotURL string) {
 	m.sendCurrentBucketLocked(screenshotURL)
 }
 
-// sendCurrentBucketLocked is the lock-holding variant. Caller MUST
-// hold m.mu; this function releases it internally after snapshotting
-// the bucket, then issues the HTTP call with no lock held (we must
-// never block I/O under the mutex). Used by flushPendingLocked to
-// avoid the lock-drop-relock race window. See V3-M3.
-func (m *ActivityMonitor) sendCurrentBucketLocked(screenshotURL string) {
-	// Deep-copy appUsage before releasing the lock. The live m.appUsage map is
-	// cleared in place by resetBucketLocked and mutated by trackActivity on the
-	// next tick; embedding the raw reference into the bucket would corrupt the
-	// JSON serialization of this heartbeat.
+// snapshotBucketLocked builds the heartbeat bucket from current
+// in-memory counters and resets them. Caller MUST hold m.mu and is
+// responsible for unlocking — this helper releases the lock after the
+// snapshot+reset so the live counters can resume accumulating into a
+// fresh bucket. Returns the bucket so the caller can decide whether to
+// enqueue it to hbQueue, attach to a screenshot retry, or drop it.
+//
+// Split out from sendCurrentBucketLocked so the screenshot-retry path
+// can capture the bucket WITHOUT going to the heartbeat queue — the
+// bucket gets pinned to the queued JPEG instead, then fired together
+// once the upload retry succeeds. Closes the screenshot ↔ activity-
+// counts orphan window from the desktop audit.
+func (m *ActivityMonitor) snapshotBucketLocked(screenshotURL string) map[string]interface{} {
 	topApp := ""
 	topTime := 0
 	appCopy := make(map[string]int, len(m.appUsage))
@@ -374,9 +411,19 @@ func (m *ActivityMonitor) sendCurrentBucketLocked(screenshotURL string) {
 
 	m.resetBucketLocked()
 	m.mu.Unlock()
+	return bucket
+}
+
+// sendCurrentBucketLocked is the lock-holding variant. Caller MUST
+// hold m.mu; this function releases it internally after snapshotting
+// the bucket, then issues the HTTP call with no lock held (we must
+// never block I/O under the mutex). Used by flushPendingLocked to
+// avoid the lock-drop-relock race window. See V3-M3.
+func (m *ActivityMonitor) sendCurrentBucketLocked(screenshotURL string) {
+	bucket := m.snapshotBucketLocked(screenshotURL)
 
 	log.Printf("Enqueue heartbeat: kb=%d mouse=%d active=%ds idle=%ds app=%s screenshot=%v",
-		bucket["keyboard_count"], bucket["mouse_count"], bucket["active_seconds"], bucket["idle_seconds"], topApp, screenshotURL != "")
+		bucket["keyboard_count"], bucket["mouse_count"], bucket["active_seconds"], bucket["idle_seconds"], bucket["top_app"], screenshotURL != "")
 
 	// Persist first, send after. This is the offline-resilience
 	// contract: the on-disk queue is the source of truth. If the
@@ -465,50 +512,61 @@ func (m *ActivityMonitor) resetBucketLocked() {
 	}
 }
 
-// captureScreenshots takes a screenshot every 10 minutes while the timer is active.
+// captureScreenshots takes a screenshot at a random moment between
+// 9 and 10 minutes after the previous one (or after Start). Every
+// capture re-rolls the next delay so the user can't predict the
+// timing pattern — defeats mouse-jiggler / "alt-tab to clean
+// window at exactly minute :10" evasion while keeping the long-
+// run average close to once per 9.5 minutes.
 //
-// Phase 6: per-tenant feature gate. ScreenshotsEnabled() reads the cached
-// OrgSettings; on a tenant where features.screenshots is false (or
-// unknown — fail-closed) the tick is a no-op. The goroutine itself
-// stays alive so that toggling the setting later flips behavior on the
-// next tick without a restart.
+// Phase 6: per-tenant feature gate. ScreenshotsEnabled() reads the
+// cached OrgSettings; on a tenant where features.screenshots is
+// false (or unknown — fail-closed) the tick is a no-op. The
+// goroutine itself stays alive so that toggling the setting later
+// flips behavior on the next tick without a restart.
 func (m *ActivityMonitor) captureScreenshots(ctx context.Context) {
-	ticker := time.NewTicker(ScreenshotInterval)
-	defer ticker.Stop()
+	// time.NewTimer (singleshot) instead of NewTicker — we re-roll
+	// the next delay after every fire, so a fixed-period ticker
+	// wouldn't give us the per-cycle randomness we want.
+	timer := time.NewTimer(nextScreenshotDelay())
+	defer timer.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			if !m.appState.IsTimerActive() {
-				continue
+		case <-timer.C:
+			if m.appState.IsTimerActive() && m.apiClient.ScreenshotsEnabled() {
+				m.takeAndUploadScreenshot(ctx)
 			}
-			if !m.apiClient.ScreenshotsEnabled() {
-				continue
-			}
-			m.takeAndUploadScreenshot(ctx)
+			// Re-arm with a fresh random delay regardless of
+			// whether we actually captured. A continuously-
+			// inactive timer should not bunch up its captures
+			// the moment activity resumes.
+			timer.Reset(nextScreenshotDelay())
 		}
 	}
 }
 
 // takeAndUploadScreenshot captures the screen, uploads to S3, and stores the URL.
 // Has panic recovery to prevent screenshot failures from crashing the app.
-// Honors ctx cancellation during the warning window so a Stop/Logout during
-// the 5-second warning does NOT produce a post-stop capture (privacy contract).
+// Privacy contract still respected via ctx — Stop / Logout cancels
+// the goroutine before this runs. The pre-capture warning balloon
+// was removed because it was noisy (a tray toast every ~9 min) and
+// broadcast capture timing to anyone in shoulder-view.
 func (m *ActivityMonitor) takeAndUploadScreenshot(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("Screenshot capture recovered from panic: %v", r)
 		}
 	}()
-	// 5-second warning via system tray balloon (reliable on all Windows versions)
-	if m.onNotify != nil {
-		m.onNotify("TaskFlow", "Screenshot in 5 seconds...")
-	}
-	if err := sleepOrCancel(ctx, ScreenshotWarningTime); err != nil {
-		// Monitor was stopped during the warning window — DO NOT capture.
+	// Honor cancellation that may have arrived just as the timer
+	// fired — Stop closing ctx between the timer firing and this
+	// function running should still abort cleanly.
+	select {
+	case <-ctx.Done():
 		return
+	default:
 	}
 
 	// Capture (CaptureScreen checks lock state internally)
@@ -526,24 +584,37 @@ func (m *ActivityMonitor) takeAndUploadScreenshot(ctx context.Context) {
 	cdnURL, err := m.apiClient.UploadScreenshot(jpegData, filename)
 	if err != nil {
 		log.Printf("Screenshot upload failed (queuing for retry): %v", err)
+		// Snapshot the activity bucket NOW (without flushing it to
+		// the heartbeat queue) and pin it to the queued JPEG. When
+		// the drain worker re-uploads later, it'll inject the
+		// recovered S3 URL into THIS bucket and fire it as a
+		// heartbeat — so the screenshot stays linked to the exact
+		// activity counts that were live when it was captured.
+		// Closes the screenshot/heartbeat orphan window the previous
+		// "flush bucket with empty URL + retry screenshot alone"
+		// path produced.
+		m.mu.Lock()
+		bucket := m.snapshotBucketLocked("")
 		if m.ssQueue != nil {
-			if qerr := m.ssQueue.Enqueue(jpegData, filename); qerr != nil {
+			if qerr := m.ssQueue.Enqueue(jpegData, filename, bucket); qerr != nil {
 				log.Printf("Failed to enqueue screenshot: %v", qerr)
-				if m.onNotify != nil {
-					m.onNotify("TaskFlow", "Screenshot upload failed — check your connection")
+				// Queue write itself failed (disk full?). Fall back
+				// to the legacy "no link, but no data lost" path —
+				// route the bucket through the heartbeat queue so
+				// activity counts at least make it to the backend.
+				if m.hbQueue != nil {
+					_ = m.hbQueue.Enqueue(bucket)
 				}
 				return
 			}
-			log.Printf("Screenshot queued (pending=%d)", m.ssQueue.Count())
-		} else if m.onNotify != nil {
-			m.onNotify("TaskFlow", "Screenshot upload failed — check your connection")
+			log.Printf("Screenshot queued with paired bucket (pending=%d)", m.ssQueue.Count())
+			return
 		}
-		// Still flush the activity bucket — the screenshot URL
-		// goes in empty because the drain will attach it later
-		// via its own bucket when we re-upload. Trading the
-		// "perfect bucket linkage" for the "no activity data
-		// lost" contract.
-		m.sendCurrentBucket("")
+		// No screenshot queue available — fall back to flushing the
+		// activity bucket without a link so counts still land.
+		if m.hbQueue != nil {
+			_ = m.hbQueue.Enqueue(bucket)
+		}
 		return
 	}
 
@@ -557,16 +628,50 @@ func (m *ActivityMonitor) takeAndUploadScreenshot(ctx context.Context) {
 // drainScreenshots replays queued screenshots to S3 via the API
 // client's presign+PUT path. Same stop-on-first-failure contract as
 // drainHeartbeats.
+//
+// When a queued entry has a paired heartbeat bucket (written by the
+// upload-failure path in takeAndUploadScreenshot), this drain injects
+// the recovered S3 URL into that bucket and forwards it to the
+// heartbeat queue — so the screenshot gets linked to the activity
+// counts captured at its original moment, not to a fresh empty bucket.
+// Older entries written without a bucket (or via the no-queue
+// fallback) just get re-uploaded; their activity counts already
+// went out via the regular heartbeat path.
 func (m *ActivityMonitor) drainScreenshots(ctx context.Context) {
 	if m.ssQueue == nil {
 		return
 	}
-	sent := m.ssQueue.Drain(ctx, func(jpeg []byte, filename string) error {
-		_, err := m.apiClient.UploadScreenshot(jpeg, filename)
-		return err
+	sent := m.ssQueue.Drain(ctx, func(jpeg []byte, filename string, bucket map[string]interface{}) error {
+		cdnURL, err := m.apiClient.UploadScreenshot(jpeg, filename)
+		if err != nil {
+			return err
+		}
+		if bucket == nil || m.hbQueue == nil {
+			// Pre-pair-schema entry, or hb queue unavailable —
+			// upload succeeded, that's all we can do.
+			return nil
+		}
+		// Inject the recovered URL into the original bucket and
+		// route it through the heartbeat queue. We deliberately DO
+		// NOT propagate a heartbeat-queue write failure back as the
+		// drain error: the screenshot upload already succeeded, so
+		// removing it from the screenshot queue is correct. A
+		// failed hb-queue write leaves the bucket lost (rare; disk
+		// full would have failed the screenshot enqueue too), but
+		// is preferable to permanently retrying an already-uploaded
+		// screenshot.
+		bucket["screenshot_url"] = cdnURL
+		if hberr := m.hbQueue.Enqueue(bucket); hberr != nil {
+			log.Printf("Screenshot drain: failed to re-link bucket to %s: %v", cdnURL, hberr)
+		}
+		return nil
 	})
 	if sent > 0 {
 		log.Printf("Screenshot drain: %d uploaded (pending=%d)", sent, m.ssQueue.Count())
+		// Kick the heartbeat drain so the just-relinked buckets
+		// hit the backend in the same drain pass rather than
+		// waiting for the next 30s tick.
+		m.drainHeartbeats(ctx)
 	}
 }
 

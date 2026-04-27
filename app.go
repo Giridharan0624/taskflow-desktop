@@ -481,6 +481,11 @@ func (a *App) Logout() error {
 	// doesn't see user A's task list on an offline launch. See
 	// V3-offline.
 	a.APIClient.ClearTasksCache()
+	// Drop the in-memory org settings copy so user B doesn't inherit
+	// user A's tenant feature flags during the brief window before
+	// /orgs/current returns on the new login. Fixes the cross-tenant
+	// flag-leak on shared machines flagged in the desktop audit.
+	a.APIClient.ClearSettingsCache()
 	authErr := a.AuthService.Logout()
 	a.State.SetAuthenticated(false)
 	a.State.SetAttendance(nil)

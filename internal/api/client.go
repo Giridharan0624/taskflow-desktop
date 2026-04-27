@@ -306,6 +306,40 @@ func (c *Client) ScreenshotsEnabled() bool {
 	return enabled
 }
 
+// ActivityMonitoringEnabled reports whether the tenant has the master
+// activity_monitoring toggle on. Gates the heartbeat loop the same way
+// ScreenshotsEnabled gates the screenshot loop. The backend now also
+// rejects POST /activity/heartbeat with 403 FEATURE_DISABLED when this
+// is off, but checking here avoids the round-trip + spurious error log.
+//
+// Fail-OPEN when settings haven't loaded yet: activity monitoring is
+// the default for new tenants (the OrgSettings default is `true`), and
+// blocking heartbeats during the initial /orgs/current fetch would
+// silently lose the first ~5 minutes of activity for every login.
+// Same shape as the backend's `require_feature` fail-open behavior.
+func (c *Client) ActivityMonitoringEnabled() bool {
+	c.settingsMu.RLock()
+	defer c.settingsMu.RUnlock()
+	if c.settings == nil {
+		return true
+	}
+	enabled, ok := c.settings.Features["activity_monitoring"]
+	if !ok {
+		return true
+	}
+	return enabled
+}
+
+// ClearSettingsCache drops the in-memory settings copy. Called on
+// logout so the next user signing in on the same machine doesn't
+// inherit the previous tenant's feature flags during the brief
+// window before /orgs/current returns.
+func (c *Client) ClearSettingsCache() {
+	c.settingsMu.Lock()
+	defer c.settingsMu.Unlock()
+	c.settings = nil
+}
+
 // GetMyAttendance fetches GET /attendance/me.
 func (c *Client) GetMyAttendance() (*Attendance, error) {
 	req, err := c.request()

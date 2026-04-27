@@ -16,13 +16,24 @@ import (
 
 // Manager manages the system tray icon on Linux.
 //
-// Notifications previously shelled out to `notify-send`, which required
-// the libnotify-bin package (libnotify on Fedora, libnotify on Arch)
-// installed separately by every user. We now speak the
-// org.freedesktop.Notifications D-Bus service directly — that's the
-// same service notify-send delegates to, so users see the exact same
-// notification bubble from their notification daemon (mako, dunst,
-// gnome-shell, plasma, etc.) with zero extra packages.
+// SCOPE: notification-only BY DESIGN. The Windows tray
+// (tray_windows.go) renders a clickable system-tray icon with a Win32
+// popup menu (Show Window / Stop Timer / Open Dashboard / Quit). The
+// Linux equivalent would require a full StatusNotifierItem +
+// com.canonical.dbusmenu D-Bus implementation (~700-1000 lines of
+// protocol glue) — and every action that menu would offer already
+// exists as a button in the React UI inside the app window. Linux
+// users hit Stop Timer / Sign Out / Quit from there. We deliberately
+// don't ship a redundant native menu.
+//
+// What this file DOES provide on Linux: notification balloons via
+// org.freedesktop.Notifications. That's the same D-Bus service every
+// notification daemon (mako, dunst, gnome-shell, plasma, xfce4-notifyd)
+// implements — same service notify-send delegates to — so users see
+// the standard notification bubble with zero extra packages. The
+// Notify call previously shelled out to `notify-send`, which required
+// libnotify-bin installed separately on every machine. Speaking D-Bus
+// directly removes that dependency.
 //
 // stopCh is closed by Stop and selected on by Start. Without a dedicated
 // stop channel, Stop just flipped m.running=false and the goroutine

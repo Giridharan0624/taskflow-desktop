@@ -146,7 +146,8 @@ func TestScreenshotQueue_EnqueueDrainRoundTrip(t *testing.T) {
 		t.Fatalf("NewScreenshotQueue: %v", err)
 	}
 	jpeg := []byte{0xff, 0xd8, 0xff, 0xe0, 'J', 'F', 'I', 'F'}
-	if err := q.Enqueue(jpeg, "screenshot_test.jpg"); err != nil {
+	// Pre-pair-schema callers pass nil for bucket — covers backward compat.
+	if err := q.Enqueue(jpeg, "screenshot_test.jpg", nil); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
 	if q.Count() != 1 {
@@ -155,9 +156,11 @@ func TestScreenshotQueue_EnqueueDrainRoundTrip(t *testing.T) {
 
 	var gotJPEG []byte
 	var gotName string
-	sent := q.Drain(context.Background(), func(jpegBytes []byte, name string) error {
+	var gotBucket map[string]interface{}
+	sent := q.Drain(context.Background(), func(jpegBytes []byte, name string, bucket map[string]interface{}) error {
 		gotJPEG = jpegBytes
 		gotName = name
+		gotBucket = bucket
 		return nil
 	})
 	if sent != 1 {
@@ -168,6 +171,49 @@ func TestScreenshotQueue_EnqueueDrainRoundTrip(t *testing.T) {
 	}
 	if gotName != "screenshot_test.jpg" {
 		t.Errorf("filename roundtrip: got %q want %q", gotName, "screenshot_test.jpg")
+	}
+	if gotBucket != nil {
+		t.Errorf("bucket roundtrip: got %v want nil for legacy enqueue", gotBucket)
+	}
+}
+
+// TestScreenshotQueue_BucketPairing covers the V3-orphan fix: the
+// activity bucket captured at screenshot time must round-trip through
+// the queue so the drain worker can re-link it to the recovered S3
+// URL on retry.
+func TestScreenshotQueue_BucketPairing(t *testing.T) {
+	withTempBaseDir(t)
+	q, err := NewScreenshotQueue()
+	if err != nil {
+		t.Fatalf("NewScreenshotQueue: %v", err)
+	}
+	jpeg := []byte{0xff, 0xd8, 0xff}
+	bucket := map[string]interface{}{
+		"timestamp":      "2026-04-27T10:00:00Z",
+		"keyboard_count": float64(42), // JSON unmarshal coerces ints to float64
+		"mouse_count":    float64(13),
+		"top_app":        "code",
+	}
+	if err := q.Enqueue(jpeg, "linked.jpg", bucket); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	var gotBucket map[string]interface{}
+	sent := q.Drain(context.Background(), func(_ []byte, _ string, b map[string]interface{}) error {
+		gotBucket = b
+		return nil
+	})
+	if sent != 1 {
+		t.Fatalf("Drain sent: got %d want 1", sent)
+	}
+	if gotBucket == nil {
+		t.Fatalf("bucket lost in roundtrip")
+	}
+	if gotBucket["timestamp"] != "2026-04-27T10:00:00Z" {
+		t.Errorf("bucket timestamp roundtrip: got %v", gotBucket["timestamp"])
+	}
+	if gotBucket["keyboard_count"] != float64(42) {
+		t.Errorf("bucket keyboard_count roundtrip: got %v", gotBucket["keyboard_count"])
 	}
 }
 

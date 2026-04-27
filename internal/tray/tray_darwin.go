@@ -13,9 +13,23 @@ import (
 	"taskflow-desktop/internal/state"
 )
 
-// Manager manages the menu bar status item on macOS.
-// Uses osascript for notifications. Full NSStatusItem via CGo can be added
-// for a native menu bar icon with dropdown menu.
+// Manager manages notifications on macOS.
+//
+// SCOPE: notification-only BY DESIGN. The Windows tray
+// (tray_windows.go) renders a clickable system-tray icon with a Win32
+// popup menu (Show Window / Stop Timer / Open Dashboard / Quit). The
+// macOS equivalent would require CGo bindings to NSStatusItem + NSMenu
+// (~250 lines of Go + ~150 lines of Objective-C) plus dispatch_async
+// coordination because Wails owns the NSApplication main loop — and
+// every action that menu would offer already exists as a button in
+// the React UI inside the app window. macOS users hit Stop Timer /
+// Sign Out / Quit from there. We deliberately don't ship a redundant
+// native menu bar item.
+//
+// What this file DOES provide on macOS: native notifications via
+// osascript's `display notification` AppleScript primitive, with
+// argument-passing (not string interpolation) so server-controlled
+// title/message text can never inject AppleScript. See C-TRAY-3.
 //
 // stopCh is closed by Stop and selected on by Start, matching the Linux
 // tray's shape. See H-TRAY-2.

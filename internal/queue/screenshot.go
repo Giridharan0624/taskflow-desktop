@@ -21,9 +21,18 @@ const screenshotMaxEntries = 240
 // ScreenshotEntry is the unmarshaled metadata for a queued frame.
 // The actual JPEG bytes live in a sibling file; kept apart so we
 // don't pull every frame into RAM when listing the queue.
+//
+// `Bucket` is the heartbeat bucket the screenshot was originally
+// captured during. We store it alongside the JPEG so that a deferred
+// upload (network was down at capture time) can fire BOTH the
+// recovered S3 URL and the bucket-with-URL together — preserving
+// the screenshot ↔ activity-counts linkage that would otherwise be
+// orphaned. May be nil for older queue entries written before this
+// field existed; the drain path treats nil as "no bucket pairing".
 type ScreenshotEntry struct {
-	Filename string // original filename the caller passed (used for the S3 key)
-	JPEGPath string // absolute path to the .jpg on disk
+	Filename string                 // original filename the caller passed (used for the S3 key)
+	JPEGPath string                 // absolute path to the .jpg on disk
+	Bucket   map[string]interface{} // heartbeat bucket captured at the same moment as the JPEG
 }
 
 // ScreenshotQueue persists pending screenshot uploads. A failed
@@ -50,7 +59,15 @@ func NewScreenshotQueue() (*ScreenshotQueue, error) {
 // what eventually lands as the S3 key suffix — we keep it verbatim
 // so a re-upload hits the same key (S3 overwrites, dedupes for
 // free).
-func (q *ScreenshotQueue) Enqueue(jpeg []byte, filename string) error {
+//
+// `bucket` is the heartbeat bucket captured at the same moment as the
+// screenshot. Pass nil for screenshots that have no associated bucket
+// (e.g. legacy callers, or capture paths that already flushed the
+// bucket via a different route). When non-nil, the drain callback
+// receives it back so the caller can fire a heartbeat with the
+// recovered URL after a successful upload — closes the screenshot ↔
+// activity-counts orphan window described in the desktop audit.
+func (q *ScreenshotQueue) Enqueue(jpeg []byte, filename string, bucket map[string]interface{}) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -58,7 +75,14 @@ func (q *ScreenshotQueue) Enqueue(jpeg []byte, filename string) error {
 	jpegName := id + ".jpg"
 	metaName := id + ".meta.json"
 
-	meta := map[string]string{"filename": filename}
+	// Wire-shape kept backward-compatible: `filename` stays a
+	// top-level string. `bucket` is added as an optional sibling key
+	// so older meta files (written without it) deserialize cleanly
+	// into Bucket=nil rather than failing the unmarshal.
+	meta := map[string]interface{}{"filename": filename}
+	if bucket != nil {
+		meta["bucket"] = bucket
+	}
 	metaBytes, err := json.Marshal(meta)
 	if err != nil {
 		return fmt.Errorf("screenshot meta marshal: %w", err)
@@ -83,15 +107,23 @@ func (q *ScreenshotQueue) Enqueue(jpeg []byte, filename string) error {
 }
 
 // Drain replays queued screenshots. For each paired entry we call
-// `upload(jpeg, filename)`; on success both files are deleted. On
-// failure we stop (same stop-first-failure contract as
+// `upload(jpeg, filename, bucket)`; on success both files are deleted.
+// On failure we stop (same stop-first-failure contract as
 // HeartbeatQueue).
+//
+// `bucket` is the heartbeat bucket captured at the same moment as
+// the screenshot, or nil for entries written before the bucket-pair
+// schema landed. When non-nil, the upload callback is responsible
+// for ALSO firing a heartbeat with the recovered S3 URL injected
+// into the bucket — that's the whole point of pairing them in the
+// queue. If the callback wants to drop the bucket (e.g. the link
+// is no longer useful past a certain age), it can ignore the arg.
 //
 // The S3 upload path is already idempotent: same filename ⇒ same
 // key ⇒ overwrite. So a replayed screenshot that the server
 // actually received the first time is a no-op bandwidth spend, not
 // a correctness problem.
-func (q *ScreenshotQueue) Drain(ctx context.Context, upload func(jpeg []byte, filename string) error) int {
+func (q *ScreenshotQueue) Drain(ctx context.Context, upload func(jpeg []byte, filename string, bucket map[string]interface{}) error) int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -123,8 +155,13 @@ func (q *ScreenshotQueue) Drain(ctx context.Context, upload func(jpeg []byte, fi
 			log.Printf("screenshot drain read meta %s: %v", metaPath, err)
 			return sent
 		}
+		// Bucket is optional for backward compat with pre-pair-schema
+		// entries. The Enqueue path writes it as a JSON object when
+		// non-nil; older entries don't have the key and Bucket stays
+		// nil after Unmarshal.
 		var meta struct {
-			Filename string `json:"filename"`
+			Filename string                 `json:"filename"`
+			Bucket   map[string]interface{} `json:"bucket,omitempty"`
 		}
 		if err := json.Unmarshal(metaBytes, &meta); err != nil {
 			log.Printf("screenshot drain: dropping corrupt meta %s: %v", metaPath, err)
@@ -144,7 +181,7 @@ func (q *ScreenshotQueue) Drain(ctx context.Context, upload func(jpeg []byte, fi
 			return sent
 		}
 
-		if err := upload(jpeg, meta.Filename); err != nil {
+		if err := upload(jpeg, meta.Filename, meta.Bucket); err != nil {
 			log.Printf("screenshot drain stopped after %d sent: %v", sent, err)
 			return sent
 		}
