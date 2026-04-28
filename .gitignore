@@ -1,44 +1,72 @@
-# Build output
+# ─── Build output ─────────────────────────────────────────────────────────────
 build/bin/
 build/windows/installer/*.exe
+build/darwin/*.app/
+build/linux/*.AppImage
+build/linux/*.deb
+build/linux/*.rpm
 frontend/dist/
 frontend/node_modules/
 
-# Go
+# ─── Go ───────────────────────────────────────────────────────────────────────
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
+*.test
+*.out
 vendor/
+coverage.out
+coverage.html
+.air/
+bin/
+pkg/
 
-# Wails generated
+# ─── Wails generated ──────────────────────────────────────────────────────────
 wailsbindings/
 wails_bindings/
 frontend/wailsjs/
 
-# Config (contains environment-specific values — use config.example.json)
+# ─── Config (env-specific values — use config.example.json) ──────────────────
 # config.json is the active file dev.ps1 copies into from the env-specific
 # variants below. All three stay untracked.
 config.json
 config.staging.json
 config.prod.json
+config.local.json
 
-# Temp scripts
+# ─── Secrets ──────────────────────────────────────────────────────────────────
+*.pem
+*.key
+*.p12
+.env
+.env.*
+
+# ─── Temp scripts ─────────────────────────────────────────────────────────────
 check.ps1
 generate-icon.html
 convert-icon.ps1
 install-nsis.ps1
 
-# IDE
+# ─── IDE ──────────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
-# OS
+# ─── OS ───────────────────────────────────────────────────────────────────────
 Thumbs.db
 .DS_Store
+desktop.ini
 
-# Logs
+# ─── Logs ─────────────────────────────────────────────────────────────────────
 *.log
+logs/
+
+# ─── Local scratch ────────────────────────────────────────────────────────────
+tmp/
+.local/
+*.bak
+*.orig
