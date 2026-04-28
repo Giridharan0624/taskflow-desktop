@@ -158,28 +158,15 @@ export function LoginForm({ onSuccess }: LoginFormProps) {
       <div class="relative z-10 flex-1 flex flex-col items-center justify-center px-6 pb-3">
         <div class="w-full max-w-[360px]">
 
-          {/* Step eyebrow — treats the flow as a numbered pipeline.
-              Switches between 01 (sign in) and 02 (set password)
-              depending on which step the user is on. */}
-          <div
-            class="login-anim flex items-center gap-2 mb-3"
-            style={{ animationDelay: "80ms" }}
-          >
-            <span class="font-mono text-[10px] font-bold text-primary tabular-nums tracking-[0.16em]">
-              {challengePending ? "ACCESS · 02" : "ACCESS · 01"}
-            </span>
-            <span class="h-px flex-1 bg-gradient-to-r from-border via-border to-transparent" aria-hidden="true" />
-            <span class="font-mono text-[9.5px] text-muted-foreground/70 tabular-nums tracking-[0.10em]">
-              {challengePending ? "02 / 02" : "01 / 02"}
-            </span>
-          </div>
-
           {/* Heading. Display-grade weight contrast: the verb-led
               first line is bold, the second line is light + muted.
-              Matches the eyebrow's serial-number formality. */}
+              No "ACCESS · 01 / 02" eyebrow — it implied a numbered
+              pipeline every user walks through, which is wrong:
+              step 02 only appears for first-time-login users hitting
+              the NEW_PASSWORD_REQUIRED challenge. */}
           <div
             class="login-anim mb-5"
-            style={{ animationDelay: "140ms" }}
+            style={{ animationDelay: "80ms" }}
           >
             <h2 class="text-[22px] font-extrabold tracking-[-0.02em] text-foreground leading-[1.05]">
               {challengePending ? "Set a new password" : "Sign in to TaskFlow"}
@@ -208,7 +195,7 @@ export function LoginForm({ onSuccess }: LoginFormProps) {
                   <FocusInput
                     id="newpw"
                     type="password"
-                    placeholder="Min 8 chars · upper · lower · digit"
+                    placeholder="At least 8 characters"
                     value={newPassword}
                     onInput={(e: Event) => setNewPassword((e.target as HTMLInputElement).value)}
                     required
@@ -230,7 +217,7 @@ export function LoginForm({ onSuccess }: LoginFormProps) {
                   <FocusInput
                     id="identifier"
                     type="text"
-                    placeholder="you@company.com  ·  NS-26XXXX"
+                    placeholder="Email or employee ID"
                     value={email}
                     onInput={(e: Event) => setEmail((e.target as HTMLInputElement).value)}
                     required
