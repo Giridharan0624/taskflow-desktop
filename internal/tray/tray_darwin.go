@@ -150,6 +150,16 @@ func (m *Manager) SetTimerActive(active bool, task *state.CurrentTask) {
 	m.mu.Unlock()
 }
 
+// SetTimerStatus updates only the status text without flipping the
+// active flag. Used by the per-poll tooltip refresh path so the
+// macOS menu's status line shows current elapsed time without an
+// icon flicker.
+func (m *Manager) SetTimerStatus(text string) {
+	m.mu.Lock()
+	m.statusText = text
+	m.mu.Unlock()
+}
+
 // openBrowser opens a URL in the default browser. Validated
 // beforehand because macOS `open` routes by URI scheme to whatever
 // handler is registered (javascript:, file:, custom-protocol:// …) —

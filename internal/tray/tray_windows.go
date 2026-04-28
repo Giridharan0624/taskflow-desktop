@@ -474,6 +474,24 @@ func (m *Manager) SetTimerActive(active bool, task *state.CurrentTask) {
 	pPostMessage.Call(hwnd, WM_APP_SET_TIMER, 0, 0)
 }
 
+// SetTimerStatus updates ONLY the tooltip text (status line + the
+// elapsed-time substring shown next to the running task). Doesn't
+// touch the icon — used by the per-poll tooltip-refresh path so the
+// tray shows "Auth refactor — 1h 23m" while the user has the window
+// hidden, without the icon flicker that a full SetTimerActive call
+// would cause.
+func (m *Manager) SetTimerStatus(text string) {
+	m.mu.Lock()
+	m.statusText = text
+	if !m.running || m.hwnd == 0 {
+		m.mu.Unlock()
+		return
+	}
+	hwnd := m.hwnd
+	m.mu.Unlock()
+	pPostMessage.Call(hwnd, WM_APP_SET_TIMER, 0, 0)
+}
+
 // handleSetTimer runs on the window-owning thread. Holds m.mu through
 // the full NOTIFYICONDATAW mutation and the Shell_NotifyIcon call.
 func (m *Manager) handleSetTimer() {

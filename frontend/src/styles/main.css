@@ -213,3 +213,65 @@
     box-shadow: var(--shadow-card);
   }
 }
+
+
+/* ─────────────────────────────────────────────────────────────
+   Custom keyframes for delight-tier polish (P2 batch).
+   Layer-base so they sit alongside the design tokens and ship
+   with the app stylesheet, not behind a JS animation lib.
+   ───────────────────────────────────────────────────────────── */
+
+@layer base {
+  /* recording-ignite — 250ms scale + emerald glow when the timer
+     transitions stopped→active. Drives the "wow it lit up" feel
+     instead of the previous instant card-appearance. P2-16. */
+  @keyframes recording-ignite {
+    0% {
+      opacity: 0;
+      transform: scale(0.96);
+      box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.0);
+    }
+    60% {
+      opacity: 1;
+      transform: scale(1.012);
+      box-shadow: 0 0 0 6px rgba(16, 185, 129, 0.18);
+    }
+    100% {
+      opacity: 1;
+      transform: scale(1);
+      box-shadow: 0 1px 2px rgba(15, 17, 35, 0.04),
+                  0 8px 20px -12px rgba(16, 185, 129, 0.18);
+    }
+  }
+  .recording-ignite {
+    animation: recording-ignite 0.42s cubic-bezier(.2, .7, .2, 1.2) both;
+  }
+
+  /* digit-tick — used by the per-digit timer animation (P2-17).
+     Each digit slides up 100% of its own height, fading as it
+     leaves. The new digit fades in at its final position. */
+  @keyframes digit-tick {
+    0%   { opacity: 0; transform: translateY(35%); }
+    50%  { opacity: 0.65; }
+    100% { opacity: 1; transform: translateY(0); }
+  }
+  .digit-tick {
+    animation: digit-tick 0.32s cubic-bezier(.2, .8, .2, 1) both;
+  }
+
+  /* goal-pulse — sticky soft pulse on the day total when the
+     daily goal has been met. Subtle gold-into-emerald glow so it
+     reads as celebration without being a confetti cannon. P2-18. */
+  @keyframes goal-pulse {
+    0%, 100% {
+      text-shadow: 0 0 0 rgba(16, 185, 129, 0);
+    }
+    50% {
+      text-shadow: 0 0 8px rgba(16, 185, 129, 0.45);
+    }
+  }
+  .goal-pulse {
+    animation: goal-pulse 2.4s ease-in-out infinite;
+  }
+}
+

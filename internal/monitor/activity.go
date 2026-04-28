@@ -26,14 +26,6 @@ const (
 	// long-run average rate (~1 capture per 9.5 min).
 	ScreenshotMinInterval = 9 * time.Minute
 	ScreenshotMaxInterval = 10 * time.Minute
-
-	// ScreenshotWarningTime previously gated a 5 s pre-capture
-	// notification. The notification was removed (it was noisy on
-	// the user's tray and broadcast capture timing to anyone in
-	// shoulder-view). Kept the constant at 0 so any code path that
-	// still references it for cancellation behaves like an
-	// immediate capture.
-	ScreenshotWarningTime = 0
 )
 
 // nextScreenshotDelay returns a random duration uniformly distributed
@@ -46,9 +38,6 @@ func nextScreenshotDelay() time.Duration {
 	return ScreenshotMinInterval + time.Duration(rand.Int63n(span))
 }
 
-// NotifyFunc is a callback for showing notifications (e.g., tray balloon).
-type NotifyFunc func(title, message string)
-
 // ActivityMonitor tracks keyboard and mouse activity using platform-specific APIs.
 type ActivityMonitor struct {
 	mu            sync.Mutex
@@ -58,7 +47,6 @@ type ActivityMonitor struct {
 	idleDetector  *IdleDetector
 	inputTracker  *InputTracker
 	screenshotCap *ScreenshotCapture
-	onNotify      NotifyFunc
 
 	// Offline-resilience queues (best-effort — if their constructor
 	// errors at startup we log and proceed without persistence; the
@@ -115,11 +103,6 @@ func NewActivityMonitor(apiClient *api.Client, appState *state.AppState) *Activi
 		m.ssQueue = ss
 	}
 	return m
-}
-
-// SetNotifyFunc sets the callback for showing notifications.
-func (m *ActivityMonitor) SetNotifyFunc(fn NotifyFunc) {
-	m.onNotify = fn
 }
 
 // Start begins activity monitoring. Safe to call multiple times — no-ops if already running.

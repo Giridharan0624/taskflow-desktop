@@ -188,3 +188,37 @@ func (q *lockedDir) count() int {
 	names, _ := listSorted(q.dir)
 	return len(names)
 }
+
+// clear removes every entry in the queue directory. Called by the
+// "Clear local cache" settings action; the directory itself is left
+// in place so subsequent Enqueue calls don't have to recreate it.
+func (q *lockedDir) clear() error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	names, err := listSorted(q.dir)
+	if err != nil {
+		return err
+	}
+	for _, n := range names {
+		if err := os.Remove(filepath.Join(q.dir, n)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+// ClearAll wipes EVERY queue / cache directory under BaseDir. Used
+// by App.ClearLocalCache. Best-effort — partial failures are
+// returned but don't abort the rest of the cleanup.
+func ClearAll() error {
+	root, err := BaseDir()
+	if err != nil {
+		return err
+	}
+	cacheRoot, err := appDataRoot()
+	if err == nil {
+		// also wipe ./cache (tasks-cache, window-size).
+		_ = os.RemoveAll(filepath.Join(cacheRoot, "cache"))
+	}
+	return os.RemoveAll(root)
+}

@@ -203,3 +203,6 @@ func (q *ScreenshotQueue) Drain(ctx context.Context, upload func(jpeg []byte, fi
 func (q *ScreenshotQueue) Count() int {
 	return q.count() / 2
 }
+
+// Clear removes every queued screenshot pair (jpg + meta).
+func (q *ScreenshotQueue) Clear() error { return q.clear() }

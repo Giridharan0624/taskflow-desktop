@@ -87,11 +87,11 @@ func (sc *ScreenshotCapture) CaptureScreen(quality int) ([]byte, error) {
 	// Capture primary display (index 0)
 	bounds := screenshot.GetDisplayBounds(0)
 
-	// Re-check lock immediately before CaptureRect: the caller may
-	// have checked 5+ s ago (ScreenshotWarningTime), and a user who
-	// locked the screen during the warning must NOT have their
-	// pre-lock frame captured. The check is cheap — one syscall on
-	// Windows, one D-Bus property read on Linux. See V3-H3.
+	// Re-check lock immediately before CaptureRect. We already
+	// checked at the top of the function, but a user who locked
+	// the screen between then and now must NOT have their pre-lock
+	// frame captured. The check is cheap — one syscall on Windows,
+	// one D-Bus property read on Linux. See V3-H3.
 	if sc.IsScreenLocked() {
 		return nil, fmt.Errorf("screen is locked")
 	}

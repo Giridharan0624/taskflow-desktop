@@ -108,3 +108,8 @@ func (q *HeartbeatQueue) Drain(ctx context.Context, send func(bucket map[string]
 func (q *HeartbeatQueue) Count() int {
 	return q.count()
 }
+
+// Clear removes every queued heartbeat. Called by the user-initiated
+// "Clear local cache" settings action; the directory remains so
+// subsequent Enqueue calls don't have to recreate it.
+func (q *HeartbeatQueue) Clear() error { return q.clear() }

@@ -182,6 +182,17 @@ func (m *Manager) SetTimerActive(active bool, task *state.CurrentTask) {
 	m.mu.Unlock()
 }
 
+// SetTimerStatus updates only the status text (tooltip / menu line)
+// without changing the active flag. Linux tray manager uses
+// statusText in the context-menu render path; the per-poll tooltip
+// refresh just updates the cached value here so the next menu open
+// shows current elapsed time.
+func (m *Manager) SetTimerStatus(text string) {
+	m.mu.Lock()
+	m.statusText = text
+	m.mu.Unlock()
+}
+
 // openBrowser opens a URL in the default browser. xdg-open is the
 // XDG-standard entry point every major desktop (GNOME, KDE, XFCE, etc.)
 // installs by default — replacing it would mean reimplementing mimeapps.

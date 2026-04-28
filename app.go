@@ -18,6 +18,7 @@ import (
 	"taskflow-desktop/internal/monitor"
 	"taskflow-desktop/internal/queue"
 	"taskflow-desktop/internal/state"
+	"taskflow-desktop/internal/system"
 	"taskflow-desktop/internal/tray"
 	"taskflow-desktop/internal/updater"
 )
@@ -59,6 +60,11 @@ type App struct {
 	// returns. Nil if the log couldn't be created — app still
 	// works, just without replay. See V3-offline.
 	EventLog *queue.EventLog
+	// WindowSize persists the user's preferred window dimensions
+	// across launches. Read at startup (main.go) to size the Wails
+	// window; written from the frontend via SaveWindowSize whenever
+	// the user resizes. Nil = persistence disabled, defaults stand.
+	WindowSize *queue.WindowSizeStore
 }
 
 // autoSignOutIfRunning posts sign-out to the backend if a timer is
@@ -111,10 +117,11 @@ func (a *App) startup(ctx context.Context) {
 
 	a.TrayManager = tray.NewManager(a.State)
 
-	// Wire screenshot notifications to tray balloon
-	a.ActivityMonitor.SetNotifyFunc(func(title, message string) {
-		a.TrayManager.ShowBalloon(title, message)
-	})
+	// (Removed: pre-capture screenshot notifications. The monitor's
+	// notify-callback wiring was deleted in the V3 polish pass —
+	// screenshots fire silently. The frontend's `notify()` helper
+	// is the only path that surfaces tray balloons now, and it
+	// covers auto-stop / network / update-available only.)
 	a.TrayManager.SetHandler(&tray.ActionHandler{
 		OnShowWindow: func() { a.ShowWindow() },
 		OnStopTimer: func() {
@@ -405,6 +412,17 @@ func (a *App) fetchAttendance() {
 
 	if timerActive {
 		a.TrayManager.SetTimerActive(true, attendance.CurrentTask)
+		// Refresh the tooltip's elapsed-time on every poll so a user
+		// who keeps the window minimized still sees an up-to-date
+		// "Auth refactor — 1h 23m" on tray-icon hover. 10 s cadence
+		// matches the poll loop; finer granularity isn't useful at
+		// the per-minute resolution of the formatter.
+		if attendance.CurrentTask != nil && attendance.CurrentSignInAt != nil {
+			a.TrayManager.SetTimerStatus(formatTrayTooltip(
+				attendance.CurrentTask.TaskTitle,
+				*attendance.CurrentSignInAt,
+			))
+		}
 		// Scope the monitor to the current LOGIN session, not the Wails
 		// app lifetime. Otherwise a monitor started during session A
 		// inherits a.ctx's cancellation (never fires during normal
@@ -808,6 +826,133 @@ func (a *App) GetWebDashboardURL() string {
 	return config.Get().WebDashboardURL
 }
 
+// formatTrayTooltip builds the live status string shown in the tray
+// tooltip / context-menu while a timer is running. Format:
+//
+//	"Auth refactor — 1h 23m"
+//	"Quick fix — 4m"
+//
+// Hours are dropped when zero so short sessions read as "12m" rather
+// than "0h 12m". Minutes always render even at zero ("0m") so the
+// elapsed indicator is never blank during the first 60 s. Long task
+// titles are truncated to keep the whole string under the Win32
+// 127-char NOTIFYICONDATAW.SzTip cap with margin to spare.
+func formatTrayTooltip(taskTitle, signInAt string) string {
+	t, err := time.Parse(time.RFC3339, signInAt)
+	if err != nil {
+		// Fallback to the raw title if the timestamp can't parse — we
+		// still want to show something useful in the tooltip.
+		return truncateTitle(taskTitle, 96)
+	}
+	elapsed := time.Since(t)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	mins := int(elapsed.Minutes())
+	hours := mins / 60
+	mins = mins % 60
+	var dur string
+	if hours > 0 {
+		dur = fmt.Sprintf("%dh %dm", hours, mins)
+	} else {
+		dur = fmt.Sprintf("%dm", mins)
+	}
+	return truncateTitle(taskTitle, 96) + " — " + dur
+}
+
+func truncateTitle(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	if max < 1 {
+		return ""
+	}
+	return s[:max-1] + "…"
+}
+
+// ─── Settings drawer bindings ──────────────────────────────────
+
+// SetAutoStart enables / disables launching TaskFlow at OS login.
+// Implementation per-OS:
+//   - Windows: HKCU\...\Run registry value
+//   - Linux:   ~/.config/autostart/taskflow-desktop.desktop
+//   - macOS:   ~/Library/LaunchAgents/com.neurostack.taskflow.desktop.plist
+//
+// Returns an error if the OS write fails so the frontend toggle
+// can revert visually rather than silently mis-representing state.
+func (a *App) SetAutoStart(enabled bool) error {
+	as := system.New()
+	if enabled {
+		return as.Enable()
+	}
+	return as.Disable()
+}
+
+// GetAutoStart reports whether the app is currently registered for
+// auto-launch. Surfaced to the frontend so the settings drawer can
+// hydrate its toggle from the actual OS state at open time, rather
+// than trusting localStorage.
+func (a *App) GetAutoStart() bool {
+	enabled, err := system.New().Enabled()
+	if err != nil {
+		log.Printf("GetAutoStart: %v", err)
+		return false
+	}
+	return enabled
+}
+
+// ClearLocalCache wipes every queue and cache directory under the
+// app-data root: heartbeat backlog, screenshot backlog, event log,
+// tasks cache, window-size, etc. Tokens stay in the OS keyring
+// (cleared on Logout, not here). The user stays signed in.
+//
+// Surfaced from the settings drawer's "Clear local cache" action.
+// Returns an error so the UI can show a "couldn't clear" message
+// rather than silently leaving a stale cache.
+func (a *App) ClearLocalCache() error {
+	if err := queue.ClearAll(); err != nil {
+		log.Printf("ClearLocalCache: %v", err)
+		return err
+	}
+	log.Println("Local cache cleared by user request")
+	return nil
+}
+
+// ShowTrayNotification surfaces a transient tray balloon. The frontend
+// gates this by the user's `notifications` setting — Go side is
+// unconditional, so callers must check policy before invoking. Used
+// for events the user might miss when the window is minimized:
+// auto-stop notices, update-available, network errors, etc.
+//
+// Title/message are passed through to the platform tray manager,
+// which clamps to the OS limits (Windows: 63 / 255 utf16) and logs
+// the truncation. Best-effort: missing tray manager (failed
+// startup) is a silent no-op.
+func (a *App) ShowTrayNotification(title, message string) {
+	if a == nil || a.TrayManager == nil {
+		return
+	}
+	a.TrayManager.ShowBalloon(title, message)
+}
+
+// SaveWindowSize persists the user's current window dimensions so the
+// next launch restores the same size. Called from the frontend on a
+// debounced resize handler. Best-effort: a save failure logs and
+// returns without bouncing the caller.
+func (a *App) SaveWindowSize(width, height int) {
+	if a == nil || a.WindowSize == nil {
+		return
+	}
+	// Sanity-check inputs — the frontend's resize observer occasionally
+	// reports zero or negative values during animation transitions.
+	if width <= 0 || height <= 0 {
+		return
+	}
+	if err := a.WindowSize.Save(width, height); err != nil {
+		log.Printf("SaveWindowSize: %v", err)
+	}
+}
+
 // SessionInfo tells the frontend what display-server limitations apply
 // to the current session so it can surface an honest banner to the
 // user. The platform-specific detection lives in session_*.go files.
@@ -825,6 +970,22 @@ type SessionInfo struct {
 	// tracking capability, or "" if everything works. The frontend
 	// shows this as a dismissible banner on first sign-in.
 	LimitationMessage string `json:"limitationMessage"`
+}
+
+// GetIdleSeconds returns how long the activity monitor has observed
+// no keyboard/mouse input. Polled from the frontend at low cadence
+// (every ~30s while a timer is active) to drive the "still working?"
+// idle prompt — when the value crosses the configured threshold
+// (currently 5 min, frontend-side), the UI surfaces a sheet asking
+// whether to keep tracking, discard the idle window, or stop.
+//
+// Returns 0 when no monitor data is available (timer stopped, fresh
+// app start) so the frontend treats "no data" as "active".
+func (a *App) GetIdleSeconds() int {
+	if a == nil || a.State == nil {
+		return 0
+	}
+	return a.State.GetIdleSeconds()
 }
 
 // GetSessionInfo reports display-server capabilities so the UI can

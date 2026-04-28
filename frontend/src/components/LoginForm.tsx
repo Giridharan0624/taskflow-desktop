@@ -1,17 +1,38 @@
-import { useState } from "preact/hooks"
+import { useEffect, useState } from "preact/hooks"
 import type { User, LoginResult } from "../app"
 import { useTheme } from "../lib/useTheme"
 import { TaskFlowLogo } from "./Logo"
 import { friendlyError } from "../lib/errors"
 import { Button } from "./ui/Button"
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "./ui/Card"
 import { Input } from "./ui/Input"
 import { Label } from "./ui/Label"
+import { cn } from "../lib/cn"
 
 interface LoginFormProps {
   onSuccess: (user: User) => void
 }
 
+/**
+ * LoginForm — refined sign-in surface.
+ *
+ * Stays inside the existing theme tokens (Lexend body, JetBrains
+ * Mono for serial-numbers, shadcn HSL palette, indigo primary). The
+ * polish comes from composition, not new colors:
+ *
+ *   - Asymmetric brand bar at top: logo + wordmark + monospace
+ *     version chip (mimics a software build-stamp).
+ *   - "ACCESS · 01 / 02" eyebrow above the form treats the auth
+ *     flow as a numbered step in a pipeline — confidence cue.
+ *   - Inputs grow an accent underline on focus (CSS-only, single
+ *     pseudo-element). Subtle differentiation from stock shadcn.
+ *   - Faint diagonal pinstripe in the background gives the surface
+ *     texture without changing the palette.
+ *   - Orchestrated mount stagger: brand bar (0ms) → eyebrow (80ms)
+ *     → card (160ms) → fields cascade. One delightful page-load
+ *     instead of scattered hover micro-interactions.
+ *   - Footer carries an MMXXVI roman year + build version stamp,
+ *     readable as "this is a real piece of software, signed off".
+ */
 export function LoginForm({ onSuccess }: LoginFormProps) {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
@@ -22,6 +43,13 @@ export function LoginForm({ onSuccess }: LoginFormProps) {
   // frontend only tracks whether a challenge is pending.
   const [challengePending, setChallengePending] = useState(false)
   const { isDark, toggle } = useTheme()
+  // App version — surfaced as a "build stamp" next to the wordmark.
+  // Best-effort: missing binding falls through to no chip rather
+  // than blocking the form's mount.
+  const [version, setVersion] = useState<string>("")
+  useEffect(() => {
+    window.go.main.App.GetAppVersion().then(setVersion).catch(() => {})
+  }, [])
 
   async function handleLogin(e: Event) {
     e.preventDefault()
@@ -66,100 +94,314 @@ export function LoginForm({ onSuccess }: LoginFormProps) {
   }
 
   return (
-    <div class="flex flex-col h-full bg-background">
-      {/* Top bar with theme toggle */}
-      <div class="flex items-center justify-end px-3 py-2">
+    <div class="relative flex flex-col h-full bg-background overflow-hidden">
+      {/* ── Background atmosphere ───────────────────────────────
+          Two layers of subtle texture inside the theme palette:
+            1. A primary-tinted gradient haloed at the top
+            2. A faint diagonal pinstripe behind everything
+          Both stay below 6% opacity so they read as "considered
+          surface" rather than decoration.
+      ─────────────────────────────────────────────────────────── */}
+      <div
+        class="pointer-events-none absolute inset-0 z-0 opacity-[0.55]"
+        aria-hidden="true"
+        style={{
+          backgroundImage:
+            "repeating-linear-gradient(135deg, hsl(var(--foreground) / 0.02) 0 1px, transparent 1px 9px)",
+        }}
+      />
+      <div
+        class="pointer-events-none absolute -top-32 left-1/2 -translate-x-1/2 h-[420px] w-[520px] rounded-full blur-3xl bg-primary/[0.07]"
+        aria-hidden="true"
+      />
+      <div
+        class="pointer-events-none absolute inset-x-0 top-0 h-32 bg-gradient-to-b from-background/0 via-background/0 to-background"
+        aria-hidden="true"
+      />
+
+      {/* ── Top bar ─────────────────────────────────────────────
+          Brand bar on the left (logo + wordmark + version chip),
+          theme toggle on the right. Asymmetric — most desktop
+          login screens center everything; this one anchors the
+          identity to the corner where eyes track first.
+      ─────────────────────────────────────────────────────────── */}
+      <header class="relative z-10 flex items-center justify-between gap-3 px-4 py-3 login-anim" style={{ animationDelay: "0ms" }}>
+        <div class="flex items-center gap-2.5">
+          <TaskFlowLogo size={26} />
+          <div class="flex items-baseline gap-2">
+            <h1 class="text-[14px] font-extrabold tracking-[-0.015em] text-foreground leading-none">
+              Task<span class="text-primary">Flow</span>
+            </h1>
+            {version && (
+              <span
+                class="font-mono text-[9.5px] font-medium px-1.5 py-0.5 rounded border border-border bg-muted/60 text-muted-foreground tabular-nums tracking-[0.02em]"
+                title={`Build ${version}`}
+              >
+                v{version.replace(/^v/, "")}
+              </span>
+            )}
+          </div>
+        </div>
         <Button
-          variant="outline"
+          variant="ghost"
           size="icon"
-          class="h-7 w-7 text-muted-foreground"
+          class="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-accent/60"
           onClick={toggle}
           aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+          title={isDark ? "Light mode" : "Dark mode"}
         >
           {isDark ? <SunIcon /> : <MoonIcon />}
         </Button>
-      </div>
+      </header>
 
-      {/* Center content */}
-      <div class="flex-1 flex flex-col items-center justify-center px-8 -mt-4">
-        <div class="mb-6 text-center">
-          <TaskFlowLogo size={48} class="mx-auto mb-3" />
-          <h1 class="text-lg font-extrabold tracking-tight text-foreground">
-            Task<span class="text-primary">Flow</span>
-          </h1>
-          <p class="text-[11px] mt-0.5 text-muted-foreground">Desktop Time Tracker</p>
-        </div>
+      {/* ── Main form area ────────────────────────────────────── */}
+      <div class="relative z-10 flex-1 flex flex-col items-center justify-center px-6 pb-3">
+        <div class="w-full max-w-[360px]">
 
-        <Card class="w-full max-w-sm">
-          {challengePending ? (
-            <>
-              <CardHeader class="pb-3">
-                <CardTitle>Set New Password</CardTitle>
-                <CardDescription>First login — choose a password.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <form onSubmit={handleNewPassword} class="space-y-4">
-                  <Input
+          {/* Step eyebrow — treats the flow as a numbered pipeline.
+              Switches between 01 (sign in) and 02 (set password)
+              depending on which step the user is on. */}
+          <div
+            class="login-anim flex items-center gap-2 mb-3"
+            style={{ animationDelay: "80ms" }}
+          >
+            <span class="font-mono text-[10px] font-bold text-primary tabular-nums tracking-[0.16em]">
+              {challengePending ? "ACCESS · 02" : "ACCESS · 01"}
+            </span>
+            <span class="h-px flex-1 bg-gradient-to-r from-border via-border to-transparent" aria-hidden="true" />
+            <span class="font-mono text-[9.5px] text-muted-foreground/70 tabular-nums tracking-[0.10em]">
+              {challengePending ? "02 / 02" : "01 / 02"}
+            </span>
+          </div>
+
+          {/* Heading. Display-grade weight contrast: the verb-led
+              first line is bold, the second line is light + muted.
+              Matches the eyebrow's serial-number formality. */}
+          <div
+            class="login-anim mb-5"
+            style={{ animationDelay: "140ms" }}
+          >
+            <h2 class="text-[22px] font-extrabold tracking-[-0.02em] text-foreground leading-[1.05]">
+              {challengePending ? "Set a new password" : "Sign in to TaskFlow"}
+            </h2>
+            <p class="mt-1.5 text-[12px] text-muted-foreground leading-snug">
+              {challengePending
+                ? "First-time login — choose a password to continue."
+                : "Track focused time, surface daily progress, ship more."}
+            </p>
+          </div>
+
+          {/* Card-less form — the page itself IS the surface. The
+              previous shadcn Card felt like a generic SaaS modal;
+              dropping it lets the form sit on the textured page
+              and feel native to this app. */}
+          <div
+            class="login-anim"
+            style={{ animationDelay: "200ms" }}
+          >
+            {challengePending ? (
+              <form onSubmit={handleNewPassword} class="space-y-3.5">
+                <FieldRow delay={260}>
+                  <Label htmlFor="newpw" class="text-[10.5px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
+                    New password
+                  </Label>
+                  <FocusInput
+                    id="newpw"
                     type="password"
-                    placeholder="Min 8 chars, upper, lower, digit"
+                    placeholder="Min 8 chars · upper · lower · digit"
                     value={newPassword}
-                    onInput={(e) => setNewPassword((e.target as HTMLInputElement).value)}
+                    onInput={(e: Event) => setNewPassword((e.target as HTMLInputElement).value)}
                     required
                     minLength={8}
                     autoFocus
                   />
-                  {error && <ErrorBox msg={error} />}
-                  <Button type="submit" class="w-full" disabled={loading}>
-                    {loading ? "Setting…" : "Set Password & Continue"}
-                  </Button>
-                </form>
-              </CardContent>
-            </>
-          ) : (
-            <>
-              <CardHeader class="pb-3">
-                <CardTitle>Sign In</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <form onSubmit={handleLogin} class="space-y-3">
-                  <div class="space-y-1.5">
-                    <Label htmlFor="identifier">Email or Employee ID</Label>
-                    <Input
-                      id="identifier"
-                      type="text"
-                      placeholder="you@company.com or NS-26XXXX"
-                      value={email}
-                      onInput={(e) => setEmail((e.target as HTMLInputElement).value)}
-                      required
-                      autoFocus
-                    />
-                  </div>
-                  <div class="space-y-1.5">
-                    <Label htmlFor="password">Password</Label>
-                    <Input
-                      id="password"
-                      type="password"
-                      placeholder="Enter your password"
-                      value={password}
-                      onInput={(e) => setPassword((e.target as HTMLInputElement).value)}
-                      required
-                    />
-                  </div>
-                  {error && <ErrorBox msg={error} />}
-                  <Button type="submit" class="w-full" disabled={loading}>
-                    {loading ? "Signing in…" : "Sign In"}
-                  </Button>
-                </form>
-              </CardContent>
-            </>
-          )}
-        </Card>
+                </FieldRow>
+
+                {error && <ErrorBox msg={error} />}
+
+                <SubmitButton loading={loading} label="Set password & continue" delay={340} />
+              </form>
+            ) : (
+              <form onSubmit={handleLogin} class="space-y-3.5">
+                <FieldRow delay={260}>
+                  <Label htmlFor="identifier" class="text-[10.5px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
+                    Email or Employee ID
+                  </Label>
+                  <FocusInput
+                    id="identifier"
+                    type="text"
+                    placeholder="you@company.com  ·  NS-26XXXX"
+                    value={email}
+                    onInput={(e: Event) => setEmail((e.target as HTMLInputElement).value)}
+                    required
+                    autoFocus
+                  />
+                </FieldRow>
+
+                <FieldRow delay={320}>
+                  <Label htmlFor="password" class="text-[10.5px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
+                    Password
+                  </Label>
+                  <FocusInput
+                    id="password"
+                    type="password"
+                    placeholder="Enter your password"
+                    value={password}
+                    onInput={(e: Event) => setPassword((e.target as HTMLInputElement).value)}
+                    required
+                  />
+                </FieldRow>
+
+                {error && <ErrorBox msg={error} />}
+
+                <SubmitButton loading={loading} label="Sign in" delay={380} />
+              </form>
+            )}
+          </div>
+
+          {/* Trust strip below the form. Soft ambient detail —
+              users hovering before they type their password get a
+              quiet reminder that the auth path is real. */}
+          <div
+            class="login-anim mt-5 pt-3 border-t border-border/50 flex items-center gap-2 text-[10px] text-muted-foreground/85"
+            style={{ animationDelay: "440ms" }}
+          >
+            <svg class="h-3 w-3 text-primary/70" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="11" width="18" height="11" rx="2" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </svg>
+            <span>
+              SRP authentication via Cognito · TLS 1.3
+            </span>
+          </div>
+        </div>
       </div>
 
-      {/* Footer */}
-      <div class="py-2 text-center">
-        <p class="text-[10px] text-muted-foreground">NeuroStack © 2026</p>
-      </div>
+      {/* ── Footer ──────────────────────────────────────────────
+          Editorial-style stamp: organization mark + roman year +
+          build channel. Reads as "signed off by a real team",
+          which is the entire purpose of including it. */}
+      <footer
+        class="relative z-10 px-4 py-2.5 flex items-center justify-between text-[9.5px] text-muted-foreground/85 font-medium tracking-[0.06em] uppercase login-anim"
+        style={{ animationDelay: "500ms" }}
+      >
+        <span class="font-mono tabular-nums">NeuroStack · MMXXVI</span>
+        <span class="font-mono tabular-nums text-muted-foreground/65">
+          {version ? `Build ${version.replace(/^v/, "").split(".").slice(0, 3).join(".")}` : "Build —"}
+        </span>
+      </footer>
+
+      {/* Local stylesheet — keeps the focus-underline + mount
+          stagger isolated to this component without polluting the
+          global tailwind keyframes. */}
+      <style>{`
+        @keyframes login-rise {
+          from { opacity: 0; transform: translateY(6px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        .login-anim {
+          opacity: 0;
+          animation: login-rise 0.5s cubic-bezier(.2,.7,.2,1) forwards;
+        }
+
+        /* Focus underline — a 2px primary bar that grows from
+           left to full width when the wrapped input is focused.
+           Sits inside the FocusInput wrapper element via
+           ::after; the wrapper has 'group' class so peer
+           selectors hit the input. */
+        .focus-input { position: relative; }
+        .focus-input::after {
+          content: "";
+          position: absolute;
+          left: 0; right: auto; bottom: 0;
+          height: 2px;
+          width: 0;
+          background: hsl(var(--primary));
+          transition: width 0.28s cubic-bezier(.2,.7,.2,1);
+          pointer-events: none;
+          border-bottom-left-radius: var(--radius);
+          border-bottom-right-radius: var(--radius);
+        }
+        .focus-input:focus-within::after { width: 100%; }
+      `}</style>
+    </div>
+  )
+}
+
+// ─── Composition helpers ──────────────────────────────────────
+
+function FieldRow({
+  delay,
+  children,
+}: {
+  delay: number
+  children: any
+}) {
+  return (
+    <div
+      class="space-y-1 login-anim"
+      style={{ animationDelay: `${delay}ms` }}
+    >
+      {children}
+    </div>
+  )
+}
+
+// FocusInput wraps the shadcn Input in a span that owns the focus
+// underline. The ::after pseudo lives on the wrapper because the
+// real <input> can't host a pseudo-element. Forwarding all standard
+// input props through.
+function FocusInput(props: any) {
+  return (
+    <span class="focus-input block">
+      <Input {...props} class="bg-background/60 backdrop-blur-[1px]" />
+    </span>
+  )
+}
+
+function SubmitButton({
+  loading,
+  label,
+  delay,
+}: {
+  loading: boolean
+  label: string
+  delay: number
+}) {
+  return (
+    <div
+      class="login-anim pt-1"
+      style={{ animationDelay: `${delay}ms` }}
+    >
+      <Button
+        type="submit"
+        class={cn(
+          "w-full h-10 font-semibold gap-2 group",
+          "shadow-sm hover:shadow",
+          "tracking-[-0.005em]",
+        )}
+        disabled={loading}
+      >
+        {loading ? (
+          <span class="opacity-90">{label.endsWith("…") ? label : `${label}…`.replace("Sign in…", "Signing in…").replace("Set password & continue…", "Setting password…")}</span>
+        ) : (
+          <>
+            <span>{label}</span>
+            <svg
+              class="h-3 w-3 transition-transform group-hover:translate-x-0.5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              stroke-width="2.4"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M5 12h14M13 5l7 7-7 7" />
+            </svg>
+          </>
+        )}
+      </Button>
     </div>
   )
 }
@@ -168,9 +410,26 @@ function ErrorBox({ msg }: { msg: string }) {
   return (
     <div
       role="alert"
-      class="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+      class={cn(
+        "flex items-start gap-2 rounded-md border border-destructive/25 bg-destructive/[0.07] px-2.5 py-2",
+        "text-[11.5px] leading-snug text-destructive",
+        "animate-in fade-in slide-in-from-top-1",
+      )}
     >
-      {msg}
+      <svg
+        class="mt-px h-3.5 w-3.5 flex-shrink-0"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <circle cx="12" cy="12" r="10" />
+        <path d="M12 8v4M12 16h.01" />
+      </svg>
+      <span class="font-medium">{msg}</span>
     </div>
   )
 }

@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -120,6 +121,23 @@ func (l *EventLog) Count() int {
 	defer l.mu.Unlock()
 	names, _ := listSorted(l.dir)
 	return len(names)
+}
+
+// Clear wipes every queued event. Called by the "Clear local cache"
+// settings action.
+func (l *EventLog) Clear() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	names, err := listSorted(l.dir)
+	if err != nil {
+		return err
+	}
+	for _, n := range names {
+		if err := os.Remove(filepath.Join(l.dir, n)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
 }
 
 // HasPending reports whether at least one event is queued. Cheaper

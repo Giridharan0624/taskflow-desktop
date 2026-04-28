@@ -60,6 +60,17 @@ func (c *TasksCache) Load() ([]byte, error) {
 	return data, nil
 }
 
+// Clear removes the cache file. Called by the "Clear local cache"
+// settings action. Idempotent — missing file is not an error.
+func (c *TasksCache) Clear() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := os.Remove(c.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 // LoadInto unmarshals the cached JSON into `out`. Returns false if
 // the cache is empty; a corrupt cache is treated as empty and
 // silently removed so the next successful Store replaces it.

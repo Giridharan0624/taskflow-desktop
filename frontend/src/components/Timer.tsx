@@ -40,15 +40,45 @@ export function Timer({ startTime, class: className }: TimerProps) {
     };
   }, [startTime]);
 
-  const display = Number.isFinite(elapsed) && elapsed >= 0
-    ? [
-        String(Math.floor(elapsed / 3600)).padStart(2, "0"),
-        String(Math.floor((elapsed % 3600) / 60)).padStart(2, "0"),
-        String(elapsed % 60).padStart(2, "0"),
-      ].join(":")
-    : "--:--:--";
+  if (!(Number.isFinite(elapsed) && elapsed >= 0)) {
+    return <span class={className || "timer-display"}>--:--:--</span>;
+  }
 
-  return <span class={className || "timer-display"}>{display}</span>;
+  // Per-digit render so each digit can animate independently when
+  // it changes. The seconds-ones digit ticks every second; the
+  // tens, then minutes-ones, etc. tick at decreasing rates. Using
+  // `key={digit}` on each <Digit /> forces Preact to remount that
+  // node on change, which retriggers the digit-tick keyframe. P2-17.
+  const hh = String(Math.floor(elapsed / 3600)).padStart(2, "0");
+  const mm = String(Math.floor((elapsed % 3600) / 60)).padStart(2, "0");
+  const ss = String(elapsed % 60).padStart(2, "0");
+
+  return (
+    <span class={className || "timer-display"} aria-label={`${hh}:${mm}:${ss} elapsed`}>
+      <Digit ch={hh[0]} />
+      <Digit ch={hh[1]} />
+      <span class="opacity-60">:</span>
+      <Digit ch={mm[0]} />
+      <Digit ch={mm[1]} />
+      <span class="opacity-60">:</span>
+      <Digit ch={ss[0]} />
+      <Digit ch={ss[1]} />
+    </span>
+  );
+}
+
+// One animated digit. Re-keyed by its own char so a value change
+// remounts the span and replays the digit-tick keyframe. The
+// inline-block + overflow-hidden wrapper keeps adjacent digits from
+// shifting horizontally during the slide-in.
+function Digit({ ch }: { ch: string }) {
+  return (
+    <span class="inline-block overflow-hidden align-baseline">
+      <span key={ch} class="inline-block digit-tick">
+        {ch}
+      </span>
+    </span>
+  );
 }
 
 /**

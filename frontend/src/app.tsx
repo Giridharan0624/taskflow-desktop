@@ -22,6 +22,26 @@ declare global {
           GetAppVersion(): Promise<string>;
           GetWebDashboardURL(): Promise<string>;
           GetSessionInfo(): Promise<SessionInfo>;
+          /** Returns activity-monitor idle seconds. Polled from
+           *  TimerView while a timer is active to drive the
+           *  "still working?" prompt. */
+          GetIdleSeconds(): Promise<number>;
+          /** Persist the current window dimensions so the next launch
+           *  restores the same size. Best-effort — failure is logged
+           *  Go-side and never thrown to the caller. */
+          SaveWindowSize(width: number, height: number): Promise<void>;
+          /** Enable / disable launch-at-OS-login. Throws on OS write
+           *  failure so the UI can revert the toggle. */
+          SetAutoStart(enabled: boolean): Promise<void>;
+          /** Read the current OS-level auto-launch state — used to
+           *  hydrate the settings drawer toggle on open. */
+          GetAutoStart(): Promise<boolean>;
+          /** Wipe every queue + cache directory. Tokens stay in the
+           *  OS keyring (cleared on Logout, not here). */
+          ClearLocalCache(): Promise<void>;
+          /** Surface a transient tray balloon. Frontend gates by the
+           *  user's `notifications` setting before calling. */
+          ShowTrayNotification(title: string, message: string): Promise<void>;
         };
       };
     };
@@ -135,6 +155,30 @@ export function App() {
   useEffect(() => {
     // Check if session was restored from keychain
     checkAuth();
+  }, []);
+
+  // Persist the window dimensions on resize, debounced. The handler
+  // runs on every resize tick (Wails fires hundreds during a drag) so
+  // the debounce keeps disk writes to one per "resize gesture" rather
+  // than one per pixel. 400 ms feels responsive without thrashing IO.
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout> | null = null;
+    function onResize() {
+      if (t) clearTimeout(t);
+      t = setTimeout(() => {
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        // The Go binding clamps + sanity-checks; we don't bother
+        // here, just fire-and-forget. If the IPC errors (e.g. during
+        // shutdown) the catch swallows it.
+        window.go.main.App.SaveWindowSize(w, h).catch(() => {});
+      }, 400);
+    }
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      if (t) clearTimeout(t);
+    };
   }, []);
 
   async function checkAuth() {
