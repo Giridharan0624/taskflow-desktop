@@ -49,11 +49,11 @@ jobs:
           $pkg = "taskflow-desktop/internal/config"
           $version = "${{ steps.version.outputs.VERSION }}"
           $ldflags = @(
-            "-X '${pkg}.apiURL=${{ secrets.API_URL }}'"
-            "-X '${pkg}.cognitoRegion=${{ secrets.COGNITO_REGION }}'"
-            "-X '${pkg}.cognitoPoolID=${{ secrets.COGNITO_POOL_ID }}'"
-            "-X '${pkg}.cognitoClientID=${{ secrets.COGNITO_CLIENT_ID }}'"
-            "-X '${pkg}.webDashboardURL=${{ secrets.WEB_DASHBOARD_URL }}'"
+            "-X '${pkg}.apiURL=https://mcx0iyvisf.execute-api.ap-south-1.amazonaws.com/prod'"
+            "-X '${pkg}.cognitoRegion=ap-south-1'"
+            "-X '${pkg}.cognitoPoolID=ap-south-1_yWxQYrYXp'"
+            "-X '${pkg}.cognitoClientID=6eaa6ej7a3j1p5jm5ooq1ui0g3'"
+            "-X '${pkg}.webDashboardURL=https://taskflow-ns.vercel.app'"
             "-X 'taskflow-desktop/internal/updater.CurrentVersion=${version}'"
           ) -join " "
           wails build -ldflags "$ldflags"
@@ -107,11 +107,11 @@ jobs:
         run: |
           PKG="taskflow-desktop/internal/config"
           VERSION="${{ steps.version.outputs.VERSION }}"
-          LDFLAGS="-X '${PKG}.apiURL=${{ secrets.API_URL }}' \
-            -X '${PKG}.cognitoRegion=${{ secrets.COGNITO_REGION }}' \
-            -X '${PKG}.cognitoPoolID=${{ secrets.COGNITO_POOL_ID }}' \
-            -X '${PKG}.cognitoClientID=${{ secrets.COGNITO_CLIENT_ID }}' \
-            -X '${PKG}.webDashboardURL=${{ secrets.WEB_DASHBOARD_URL }}' \
+          LDFLAGS="-X '${PKG}.apiURL=https://mcx0iyvisf.execute-api.ap-south-1.amazonaws.com/prod' \
+            -X '${PKG}.cognitoRegion=ap-south-1' \
+            -X '${PKG}.cognitoPoolID=ap-south-1_yWxQYrYXp' \
+            -X '${PKG}.cognitoClientID=6eaa6ej7a3j1p5jm5ooq1ui0g3' \
+            -X '${PKG}.webDashboardURL=https://taskflow-ns.vercel.app' \
             -X 'taskflow-desktop/internal/updater.CurrentVersion=${VERSION}'"
           wails build -ldflags "$LDFLAGS"
 
@@ -189,11 +189,11 @@ jobs:
         run: |
           PKG="taskflow-desktop/internal/config"
           VERSION="${{ steps.version.outputs.VERSION }}"
-          LDFLAGS="-X '${PKG}.apiURL=${{ secrets.API_URL }}' \
-            -X '${PKG}.cognitoRegion=${{ secrets.COGNITO_REGION }}' \
-            -X '${PKG}.cognitoPoolID=${{ secrets.COGNITO_POOL_ID }}' \
-            -X '${PKG}.cognitoClientID=${{ secrets.COGNITO_CLIENT_ID }}' \
-            -X '${PKG}.webDashboardURL=${{ secrets.WEB_DASHBOARD_URL }}' \
+          LDFLAGS="-X '${PKG}.apiURL=https://mcx0iyvisf.execute-api.ap-south-1.amazonaws.com/prod' \
+            -X '${PKG}.cognitoRegion=ap-south-1' \
+            -X '${PKG}.cognitoPoolID=ap-south-1_yWxQYrYXp' \
+            -X '${PKG}.cognitoClientID=6eaa6ej7a3j1p5jm5ooq1ui0g3' \
+            -X '${PKG}.webDashboardURL=https://taskflow-ns.vercel.app' \
             -X 'taskflow-desktop/internal/updater.CurrentVersion=${VERSION}'"
           wails build -tags webkit2_41 -ldflags "$LDFLAGS"
 
@@ -289,11 +289,11 @@ jobs:
         run: |
           PKG="taskflow-desktop/internal/config"
           VERSION="${{ steps.version.outputs.VERSION }}"
-          LDFLAGS="-X '${PKG}.apiURL=${{ secrets.API_URL }}' \
-            -X '${PKG}.cognitoRegion=${{ secrets.COGNITO_REGION }}' \
-            -X '${PKG}.cognitoPoolID=${{ secrets.COGNITO_POOL_ID }}' \
-            -X '${PKG}.cognitoClientID=${{ secrets.COGNITO_CLIENT_ID }}' \
-            -X '${PKG}.webDashboardURL=${{ secrets.WEB_DASHBOARD_URL }}' \
+          LDFLAGS="-X '${PKG}.apiURL=https://mcx0iyvisf.execute-api.ap-south-1.amazonaws.com/prod' \
+            -X '${PKG}.cognitoRegion=ap-south-1' \
+            -X '${PKG}.cognitoPoolID=ap-south-1_yWxQYrYXp' \
+            -X '${PKG}.cognitoClientID=6eaa6ej7a3j1p5jm5ooq1ui0g3' \
+            -X '${PKG}.webDashboardURL=https://taskflow-ns.vercel.app' \
             -X 'taskflow-desktop/internal/updater.CurrentVersion=${VERSION}'"
           wails build -platform darwin/universal -ldflags "$LDFLAGS"
 
@@ -322,7 +322,7 @@ jobs:
           name: macos-build
           path: TaskFlowDesktop-*-universal.dmg
 
-  # ═══ Create Release + Upload to S3 ═══
+  # ═══ Create GitHub Release (sole download source for the website) ═══
   release:
     needs: [build-windows, build-linux, build-linux-deb, build-macos]
     runs-on: ubuntu-latest
@@ -445,54 +445,3 @@ jobs:
           files: release-files/*
           draft: false
           prerelease: false
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ap-south-1
-
-      - name: Upload to S3
-        run: |
-          VERSION="${{ steps.version.outputs.VERSION }}"
-          S3_BUCKET="taskflow-ns-uploads-prod"
-          S3_PREFIX="releases/v${VERSION}"
-
-          # Upload all platform builds (files already collected in release-files/)
-          aws s3 cp release-files/ "s3://${S3_BUCKET}/${S3_PREFIX}/" --recursive
-
-          # Create latest.json for website download page
-          cat > /tmp/latest.json << EOF
-          {
-            "version": "${VERSION}",
-            "released_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "downloads": {
-              "windows": "https://dp2uotzxlo5a5.cloudfront.net/${S3_PREFIX}/TaskFlowDesktop-Setup-${VERSION}.exe",
-              "linux": "https://dp2uotzxlo5a5.cloudfront.net/${S3_PREFIX}/TaskFlow-${VERSION}-x86_64.AppImage",
-              "linux_deb": "https://dp2uotzxlo5a5.cloudfront.net/${S3_PREFIX}/taskflow-desktop_${VERSION}_amd64.deb",
-              "macos": "https://dp2uotzxlo5a5.cloudfront.net/${S3_PREFIX}/TaskFlowDesktop-${VERSION}-universal.dmg"
-            },
-            "github_release": "https://github.com/Giridharan0624/taskflow-desktop/releases/tag/v${VERSION}"
-          }
-          EOF
-
-          aws s3 cp /tmp/latest.json "s3://${S3_BUCKET}/releases/latest.json" \
-            --content-type "application/json" \
-            --cache-control "no-cache, max-age=0, must-revalidate"
-
-      - name: Invalidate CloudFront cache for latest.json
-        run: |
-          aws cloudfront create-invalidation \
-            --distribution-id "${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}" \
-            --paths "/releases/latest.json"
-
-      - name: Print release URLs
-        run: |
-          VERSION="${{ steps.version.outputs.VERSION }}"
-          S3_PREFIX="releases/v${VERSION}"
-          echo "=== Uploaded to S3 ==="
-          echo "Windows: https://dp2uotzxlo5a5.cloudfront.net/${S3_PREFIX}/TaskFlowDesktop-Setup-${VERSION}.exe"
-          echo "Linux: https://dp2uotzxlo5a5.cloudfront.net/${S3_PREFIX}/TaskFlow-${VERSION}-x86_64.AppImage"
-          echo "macOS: https://dp2uotzxlo5a5.cloudfront.net/${S3_PREFIX}/TaskFlowDesktop-${VERSION}-universal.dmg"
-          echo "Latest: https://dp2uotzxlo5a5.cloudfront.net/releases/latest.json"
