@@ -3,11 +3,11 @@ UPDATER_PKG = taskflow-desktop/internal/updater
 VERSION ?= 1.0.0
 
 # Override these for production builds
-API_URL ?= https://4saz9agwdi.execute-api.ap-south-1.amazonaws.com/staging
+API_URL ?= https://mcx0iyvisf.execute-api.ap-south-1.amazonaws.com/prod
 COGNITO_REGION ?= ap-south-1
-COGNITO_POOL_ID ?= ap-south-1_NedaPlHsx
-COGNITO_CLIENT_ID ?= 36i0ejo32b4c5u6un0g75h4bme
-WEB_DASHBOARD_URL ?= https://taskflow-ns.vercel.app
+COGNITO_POOL_ID ?= ap-south-1_yWxQYrYXp
+COGNITO_CLIENT_ID ?= 6eaa6ej7a3j1p5jm5ooq1ui0g3
+WEB_DASHBOARD_URL ?= http://localhost:3000
 
 LDFLAGS = -X '$(PKG).apiURL=$(API_URL)' \
           -X '$(PKG).cognitoRegion=$(COGNITO_REGION)' \

@@ -14,11 +14,11 @@ Write-Host ""
 # ── Step 1: Production build ──
 Write-Host "Step 1: Building production binary..."
 $ldflags = @(
-    "-X '${pkg}.apiURL=https://3syc4x99a7.execute-api.ap-south-1.amazonaws.com/prod'"
+    "-X '${pkg}.apiURL=https://qhh92ze0rc.execute-api.ap-south-1.amazonaws.com/prod'"
     "-X '${pkg}.cognitoRegion=ap-south-1'"
-    "-X '${pkg}.cognitoPoolID=ap-south-1_72qWKeSH5'"
-    "-X '${pkg}.cognitoClientID=pentcto4cmlfof93tsv738nct'"
-    "-X '${pkg}.webDashboardURL=https://taskflow-ns.vercel.app'"
+    "-X '${pkg}.cognitoPoolID=ap-south-1_KvHp1RVEE'"
+    "-X '${pkg}.cognitoClientID=7dakaniqm6vr19b7q165b8ppar'"
+    "-X '${pkg}.webDashboardURL=https://taskflow.neurostack.in'"
     "-X 'taskflow-desktop/internal/updater.CurrentVersion=${version}'"
 ) -join " "
 
