@@ -53,7 +53,7 @@ jobs:
             "-X '${pkg}.cognitoRegion=ap-south-1'"
             "-X '${pkg}.cognitoPoolID=ap-south-1_yWxQYrYXp'"
             "-X '${pkg}.cognitoClientID=6eaa6ej7a3j1p5jm5ooq1ui0g3'"
-            "-X '${pkg}.webDashboardURL=https://taskflow-ns.vercel.app'"
+            "-X '${pkg}.webDashboardURL=https://taskflow.neurostack.in'"
             "-X 'taskflow-desktop/internal/updater.CurrentVersion=${version}'"
           ) -join " "
           wails build -ldflags "$ldflags"
@@ -111,7 +111,7 @@ jobs:
             -X '${PKG}.cognitoRegion=ap-south-1' \
             -X '${PKG}.cognitoPoolID=ap-south-1_yWxQYrYXp' \
             -X '${PKG}.cognitoClientID=6eaa6ej7a3j1p5jm5ooq1ui0g3' \
-            -X '${PKG}.webDashboardURL=https://taskflow-ns.vercel.app' \
+            -X '${PKG}.webDashboardURL=https://taskflow.neurostack.in' \
             -X 'taskflow-desktop/internal/updater.CurrentVersion=${VERSION}'"
           wails build -ldflags "$LDFLAGS"
 
@@ -193,7 +193,7 @@ jobs:
             -X '${PKG}.cognitoRegion=ap-south-1' \
             -X '${PKG}.cognitoPoolID=ap-south-1_yWxQYrYXp' \
             -X '${PKG}.cognitoClientID=6eaa6ej7a3j1p5jm5ooq1ui0g3' \
-            -X '${PKG}.webDashboardURL=https://taskflow-ns.vercel.app' \
+            -X '${PKG}.webDashboardURL=https://taskflow.neurostack.in' \
             -X 'taskflow-desktop/internal/updater.CurrentVersion=${VERSION}'"
           wails build -tags webkit2_41 -ldflags "$LDFLAGS"
 
@@ -241,7 +241,7 @@ jobs:
           Depends: libwebkit2gtk-4.1-0, libgtk-3-0, libayatana-appindicator3-1, libc6 (>= 2.35)
           Section: utils
           Priority: optional
-          Homepage: https://taskflow-ns.vercel.app
+          Homepage: https://taskflow.neurostack.in
           Description: TaskFlow time tracker and activity monitor
            Cross-platform desktop client for TaskFlow: starts and stops
            timers, tracks per-app activity, syncs with the TaskFlow
@@ -293,7 +293,7 @@ jobs:
             -X '${PKG}.cognitoRegion=ap-south-1' \
             -X '${PKG}.cognitoPoolID=ap-south-1_yWxQYrYXp' \
             -X '${PKG}.cognitoClientID=6eaa6ej7a3j1p5jm5ooq1ui0g3' \
-            -X '${PKG}.webDashboardURL=https://taskflow-ns.vercel.app' \
+            -X '${PKG}.webDashboardURL=https://taskflow.neurostack.in' \
             -X 'taskflow-desktop/internal/updater.CurrentVersion=${VERSION}'"
           wails build -platform darwin/universal -ldflags "$LDFLAGS"
 
